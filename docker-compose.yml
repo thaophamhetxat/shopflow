@@ -1,0 +1,72 @@
+# File này định nghĩa hạ tầng cốt lõi của ShopFlow ở Day 38: PostgreSQL, Redis và RabbitMQ.
+# Chúng ta chỉ giữ 3 service infra cho bounded context, không thêm Jaeger/Prometheus/Grafana vì lịch chốt thêm ở Day 64–65.
+# Cấu hình này phục vụ local development: các service chạy bằng Docker, app .NET chạy bằng dotnet run trên máy.
+services:
+  postgres:
+    # Chọn PostgreSQL 16 alpine vì lịch Day 38/42/50/65 chốt là PostgreSQL và EF Core 8, không dùng SQL Server.
+    image: postgres:16-alpine
+    # Thiết lập tài khoản local dành cho bài tập, không dùng cho production.
+    environment:
+      POSTGRES_USER: shopflow
+      POSTGRES_PASSWORD: ShopFlow123!
+      POSTGRES_DB: shopflow_order
+    # Mở cổng 5432 để app .NET local và pgAdmin kết nối vào Postgres trên máy chủ.
+    ports:
+      - "5432:5432"
+    # Volume này lưu dữ liệu Postgres trên máy host để không mất dữ liệu khi container khởi động lại.
+    volumes:
+      - shopflow_postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql:ro
+    # Health check kiểm tra database order sẵn sàng trước khi app dùng hoặc khi kiểm tra docker compose ps.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shopflow -d shopflow_order"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # Restart tự động nếu container dừng đột ngột trong môi trường local để thuận tiện phát triển.
+    restart: unless-stopped
+
+  redis:
+    # Chọn Redis 7 alpine vì cache/message broker local cho architecture thực hiện ở các day sau.
+    image: redis:7-alpine
+    # Mở cổng 6379 để app .NET và tool local truy cập Redis trên máy host.
+    ports:
+      - "6379:6379"
+    # Volume lưu dữ liệu Redis để giữ cache và trạng thái khi container được reset.
+    volumes:
+      - shopflow_redis_data:/data
+    # Health check ping xác nhận Redis còn sống và phản hồi command đúng cách.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    # Restart nếu dịch vụ tắt nên hệ thống vẫn giữ khả năng chạy lại tự động.
+    restart: unless-stopped
+
+  rabbitmq:
+    # Chọn RabbitMQ management alpine vì Day 38 cần infra để tương lai Event Bus/Outbox chạy đúng chuẩn.
+    image: rabbitmq:3-management-alpine
+    # Mở cổng AMQP 5672 để app .NET gửi/nhận message và cổng UI 15672 để quản trị local.
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    # Volume lưu dữ liệu RabbitMQ để dữ liệu queue và user được giữ qua restart container.
+    volumes:
+      - shopflow_rabbitmq_data:/var/lib/rabbitmq
+    # Health check xác nhận broker cho phép nhận message và sẵn sàng xử lý queue ở local.
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # Restart nếu RabbitMQ báo lỗi để không ngắt quá trình development cục bộ.
+    restart: unless-stopped
+
+volumes:
+  shopflow_postgres_data:
+  shopflow_redis_data:
+  shopflow_rabbitmq_data:
