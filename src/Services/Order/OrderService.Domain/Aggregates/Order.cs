@@ -4,6 +4,7 @@
 
 using OrderService.Domain.Entities;
 using OrderService.Domain.Enums;
+using OrderService.Domain.Events;
 using OrderService.Domain.Exceptions;
 using OrderService.Domain.ValueObjects;
 
@@ -17,6 +18,7 @@ namespace OrderService.Domain.Aggregates;
 public sealed class Order
 {
     private readonly List<OrderItem> _items;
+    private readonly List<IDomainEvent> _domainEvents;
     private OrderStatus _status;
     private readonly DateTime _createdAt;
 
@@ -55,6 +57,12 @@ public sealed class Order
     /// </summary>
     public Money Total => CalculateTotal(_items);
 
+    /// <summary>
+    /// Danh sách sự kiện nghiệp vụ đã phát ra từ aggregate Order nhưng chưa được xử lý bởi Outbox hoặc Saga.
+    /// Dùng để ghi lại mọi thay đổi quan trọng như đơn được đặt, xác nhận hoặc hủy.
+    /// </summary>
+    public IReadOnlyCollection<IDomainEvent> DomainEvents => _domainEvents.AsReadOnly();
+
     private Order(OrderId id, CustomerId customerId, Address shippingAddress, DateTime createdAt)
     {
         Id = id;
@@ -63,6 +71,7 @@ public sealed class Order
         _createdAt = createdAt;
         _status = OrderStatus.Pending;
         _items = new List<OrderItem>();
+        _domainEvents = new List<IDomainEvent>();
     }
 
     /// <summary>
@@ -73,7 +82,12 @@ public sealed class Order
     /// <returns>Order mới đã ở trạng thái Pending và chưa có item nào.</returns>
     public static Order Place(CustomerId customerId, Address shippingAddress)
     {
-        return new Order(OrderId.New(), customerId, shippingAddress, DateTime.UtcNow);
+        var order = new Order(OrderId.New(), customerId, shippingAddress, DateTime.UtcNow);
+
+        // Phát OrderPlacedEvent: đơn vừa được tạo là sự kiện nghiệp vụ mà Outbox (Day 43) sẽ ghi lại để các service khác biết về việc đặt hàng mới.
+        order.AddDomainEvent(new OrderPlacedEvent(order.Id, order.CustomerId, order.Total, DateTime.UtcNow));
+
+        return order;
     }
 
     /// <summary>
@@ -133,6 +147,9 @@ public sealed class Order
         }
 
         _status = OrderStatus.Confirmed;
+
+        // Phát OrderConfirmedEvent: đơn vừa được xác nhận là trạng thái nghiệp vụ đã chốt, và Saga/Outbox sau này sẽ dùng nó để kích hoạt xử lý kho, thanh toán và thông báo.
+        AddDomainEvent(new OrderConfirmedEvent(Id, CustomerId, Total, DateTime.UtcNow));
     }
 
     /// <summary>
@@ -154,6 +171,20 @@ public sealed class Order
         }
 
         _status = OrderStatus.Cancelled;
+
+        // Phát OrderCancelledEvent: đơn vừa bị hủy là sự kiện nghiệp vụ có thể kích hoạt hoàn tiền, giải phóng tồn kho hoặc cập nhật trạng thái bên ngoài.
+        AddDomainEvent(new OrderCancelledEvent(Id, CustomerId, Total, DateTime.UtcNow));
+    }
+
+    public void ClearDomainEvents()
+    {
+        _domainEvents.Clear();
+    }
+
+    private void AddDomainEvent(IDomainEvent domainEvent)
+    {
+        ArgumentNullException.ThrowIfNull(domainEvent);
+        _domainEvents.Add(domainEvent);
     }
 
     private static Money CalculateTotal(IReadOnlyCollection<OrderItem> items)
