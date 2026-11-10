@@ -7,25 +7,13 @@ using MediatR;
 namespace OrderService.Application.Queries;
 
 /// <summary>
-/// Handler khung cho GetOrderByIdQuery: bước đầu tìm order theo OrderId, bước sau map dữ liệu sang OrderDto, cuối cùng trả về DTO đã chuẩn hóa.
-/// Hiện tại chưa có repository nên handler giữ trạng thái khung và chờ triển khai ở các day sau.
+/// Handler khung cho GetOrderByIdQuery, sẽ đọc Order theo OrderId và map sang OrderDto khi repository có mặt ở Day 42.
 /// </summary>
-public sealed class GetOrderByIdQueryHandler : IRequestHandler<GetOrderByIdQuery, OrderDto>
+public sealed class GetOrderByIdQueryHandler : IRequestHandler<GetOrderByIdQuery, OrderDto?>
 {
-    public Task<OrderDto> Handle(GetOrderByIdQuery request, CancellationToken cancellationToken)
+    public Task<OrderDto?> Handle(GetOrderByIdQuery request, CancellationToken cancellationToken)
     {
-        var emptyOrder = new OrderDto(
-            Guid.Empty,
-            Guid.Empty,
-            string.Empty,
-            string.Empty,
-            string.Empty,
-            string.Empty,
-            null,
-            0m,
-            "USD",
-            Array.Empty<OrderItemDto>());
-
-        return Task.FromResult(emptyOrder);
+        // Chưa thể đọc dữ liệu khi Day 41 chưa có repository; ném lỗi rõ ràng thay vì trả một DTO rỗng giả.
+        throw new NotImplementedException("Chưa có repository để đọc Order — Day 42 sẽ hoàn thiện handler này.");
     }
 }

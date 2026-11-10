@@ -47,12 +47,12 @@ public sealed class PlaceOrderCommandValidator : AbstractValidator<PlaceOrderCom
                 item.RuleFor(x => x.Quantity)
                     .GreaterThan(0);
 
-                // UnitPrice <= 0 nghĩa là giá trị đặt hàng không có ý nghĩa thương mại, phải chặn để tránh đơn không có giá trị hoặc sai báo giá.
-                item.RuleFor(x => x.UnitPrice)
+                // UnitPriceAmount <= 0 nghĩa là giá trị đặt hàng không có ý nghĩa thương mại, phải chặn để tránh đơn không có giá trị hoặc sai báo giá.
+                item.RuleFor(x => x.UnitPriceAmount)
                     .GreaterThan(0m);
 
                 // Currency rỗng hoặc sai định dạng làm tổng tiền không thể hợp lệ, nên phải chặn trước khi map sang Money trong domain.
-                item.RuleFor(x => x.Currency)
+                item.RuleFor(x => x.UnitPriceCurrency)
                     .NotEmpty()
                     .Must(currency => currency.Length == 3 && currency.All(char.IsLetter));
             });

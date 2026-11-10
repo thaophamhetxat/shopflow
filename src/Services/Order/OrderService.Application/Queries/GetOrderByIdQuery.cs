@@ -8,6 +8,6 @@ namespace OrderService.Application.Queries;
 
 /// <summary>
 /// Query yêu cầu lấy thông tin đơn hàng theo mã OrderId, dùng cho UI, API hoặc workflow cần đọc chi tiết đơn đang tồn tại.
-/// Query này không lưu dữ liệu mà chỉ định nghĩa request phục vụ cho handler xử lý.
+/// Kết quả có thể null nếu chưa tìm thấy đơn hàng.
 /// </summary>
-public sealed record GetOrderByIdQuery(Guid OrderId) : IRequest<OrderDto>;
+public sealed record GetOrderByIdQuery(Guid OrderId) : IRequest<OrderDto?>;

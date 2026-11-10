@@ -50,4 +50,45 @@ public class PlaceOrderCommandValidatorTests
         Assert.False(result.IsValid);
         Assert.Contains(result.Errors, x => x.PropertyName == nameof(PlaceOrderCommand.Items));
     }
+
+    // Test này chứng minh Evidence Day 41: địa chỉ thiếu Street phải bị validator từ chối trước khi handler tạo Order.
+    [Fact]
+    public void Validator_Rejects_EmptyAddress()
+    {
+        var command = new PlaceOrderCommand(
+            Guid.NewGuid(),
+            string.Empty,
+            "Hà Nội",
+            "Việt Nam",
+            "100000",
+            new List<PlaceOrderItem>
+            {
+                new(Guid.NewGuid(), 1, 150000m, "VND")
+            });
+
+        var result = new PlaceOrderCommandValidator().Validate(command);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, x => x.PropertyName == nameof(PlaceOrderCommand.Street));
+    }
+
+    // Test này chứng minh Evidence Day 41: command đủ khách hàng, địa chỉ và dòng hàng hợp lệ được validator chấp nhận.
+    [Fact]
+    public void Validator_Accepts_ValidCommand()
+    {
+        var command = new PlaceOrderCommand(
+            Guid.NewGuid(),
+            "123 Lê Lợi",
+            "Hà Nội",
+            "Việt Nam",
+            "100000",
+            new List<PlaceOrderItem>
+            {
+                new(Guid.NewGuid(), 1, 150000m, "VND")
+            });
+
+        var result = new PlaceOrderCommandValidator().Validate(command);
+
+        Assert.True(result.IsValid);
+    }
 }

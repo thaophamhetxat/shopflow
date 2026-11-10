@@ -3,13 +3,13 @@
 // Application layer dùng command này để chuyển đổi từ input sang domain object an toàn.
 
 using MediatR;
-using OrderService.Application.Queries;
+using OrderService.Domain.ValueObjects;
 
 namespace OrderService.Application.Commands;
 
 /// <summary>
 /// Command yêu cầu đặt mới một đơn hàng cho khách hàng, bao gồm địa chỉ giao hàng và danh sách sản phẩm cần mua.
-/// Command này được người gửi từ API hoặc orchestrator dùng để tạo Order aggregate từ input hợp lệ.
+/// API hoặc orchestrator gửi command này và nhận lại OrderId của đơn vừa được tạo.
 /// </summary>
 public sealed record PlaceOrderCommand(
     Guid CustomerId,
@@ -17,10 +17,10 @@ public sealed record PlaceOrderCommand(
     string City,
     string Country,
     string? PostalCode,
-    List<PlaceOrderItem> Items) : IRequest<OrderDto>;
+    List<PlaceOrderItem> Items) : IRequest<OrderId>;
 
 /// <summary>
-/// Dòng hàng được đặt trong một order, gồm mã sản phẩm, số lượng và đơn giá theo tiền tệ cụ thể.
-/// Item này không gắn với Entity của domain trực tiếp mà sẽ được map thành OrderItem ở handler.
+/// Dữ liệu một dòng hàng do người gửi command cung cấp để handler tạo OrderItem trong Domain.
+/// Bao gồm mã sản phẩm, số lượng, đơn giá và mã tiền tệ.
 /// </summary>
-public sealed record PlaceOrderItem(Guid ProductId, int Quantity, decimal UnitPrice, string Currency);
+public sealed record PlaceOrderItem(Guid ProductId, int Quantity, decimal UnitPriceAmount, string UnitPriceCurrency);

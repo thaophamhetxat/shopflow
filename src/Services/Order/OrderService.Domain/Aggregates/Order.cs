@@ -149,7 +149,7 @@ public sealed class Order
         _status = OrderStatus.Confirmed;
 
         // Phát OrderConfirmedEvent: đơn vừa được xác nhận là trạng thái nghiệp vụ đã chốt, và Saga/Outbox sau này sẽ dùng nó để kích hoạt xử lý kho, thanh toán và thông báo.
-        AddDomainEvent(new OrderConfirmedEvent(Id, CustomerId, Total, DateTime.UtcNow));
+        AddDomainEvent(new OrderConfirmedEvent(Id, Total, DateTime.UtcNow));
     }
 
     /// <summary>
@@ -173,7 +173,7 @@ public sealed class Order
         _status = OrderStatus.Cancelled;
 
         // Phát OrderCancelledEvent: đơn vừa bị hủy là sự kiện nghiệp vụ có thể kích hoạt hoàn tiền, giải phóng tồn kho hoặc cập nhật trạng thái bên ngoài.
-        AddDomainEvent(new OrderCancelledEvent(Id, CustomerId, Total, DateTime.UtcNow));
+        AddDomainEvent(new OrderCancelledEvent(Id, DateTime.UtcNow));
     }
 
     public void ClearDomainEvents()

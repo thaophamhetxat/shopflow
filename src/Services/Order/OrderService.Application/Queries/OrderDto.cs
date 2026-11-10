@@ -1,5 +1,5 @@
 // File này chứa DTO dùng để trả về thông tin đơn hàng từ Application layer.
-// Tạo ở Day 41 để chuẩn hóa response của query và command PlaceOrder, trước khi Day 42 thêm persistence và API.
+// Tạo ở Day 41 để chuẩn hóa response của query đọc Order trước khi Day 42 thêm persistence.
 // Application layer dùng DTO để tránh làm lộ trực tiếp aggregate hay entity sang tầng trên.
 
 namespace OrderService.Application.Queries;
@@ -12,16 +12,12 @@ public sealed record OrderDto(
     Guid OrderId,
     Guid CustomerId,
     string Status,
-    string Street,
-    string City,
-    string Country,
-    string? PostalCode,
     decimal TotalAmount,
-    string Currency,
+    string TotalCurrency,
+    DateTime CreatedAt,
     IReadOnlyCollection<OrderItemDto> Items);
 
 /// <summary>
-/// DTO đại diện cho một dòng hàng trong đơn hàng, chứa thông tin sản phẩm và giá trị tính toán của item.
-/// DTO này hữu ích khi trả về chi tiết order cho nơi gọi mà không cần quan sát aggregate internals.
+/// DTO đại diện cho một dòng hàng trong đơn, gồm thông tin sản phẩm, đơn giá và tổng tiền của dòng.
 /// </summary>
-public sealed record OrderItemDto(Guid ProductId, int Quantity, decimal UnitPrice, string Currency);
+public sealed record OrderItemDto(Guid ProductId, int Quantity, decimal UnitPriceAmount, string UnitPriceCurrency, decimal LineTotalAmount);

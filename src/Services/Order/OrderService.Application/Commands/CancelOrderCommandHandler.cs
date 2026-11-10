@@ -7,13 +7,13 @@ using MediatR;
 namespace OrderService.Application.Commands;
 
 /// <summary>
-/// Handler khung cho CancelOrderCommand: bước đầu là lấy order theo OrderId, bước tiếp theo là gọi Aggregate.Cancel, cuối cùng mới trả về trạng thái thành công.
-/// Hiện tại chưa có repository nên handler trả về giá trị mặc định và chờ triển khai thực tế ở ngày sau.
+/// Handler khung cho CancelOrderCommand, sẽ tải Order theo OrderId rồi gọi hành vi Cancel khi repository có mặt ở Day 42.
 /// </summary>
-public sealed class CancelOrderCommandHandler : IRequestHandler<CancelOrderCommand, bool>
+public sealed class CancelOrderCommandHandler : IRequestHandler<CancelOrderCommand>
 {
-    public Task<bool> Handle(CancelOrderCommand request, CancellationToken cancellationToken)
+    public Task Handle(CancelOrderCommand request, CancellationToken cancellationToken)
     {
-        return Task.FromResult(false);
+        // Chưa thể tải aggregate khi Day 41 chưa có repository; ném lỗi rõ ràng thay vì giả vờ hủy thành công hoặc thất bại.
+        throw new NotImplementedException("Chưa có repository để tải Order — Day 42 sẽ hoàn thiện handler này.");
     }
 }

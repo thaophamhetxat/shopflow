@@ -35,7 +35,7 @@ public class OrderDomainEventsTests
 
         var confirmedEvent = Assert.IsType<OrderConfirmedEvent>(order.DomainEvents.Single(x => x is OrderConfirmedEvent));
         Assert.Equal(order.Id, confirmedEvent.OrderId);
-        Assert.Equal(order.CustomerId, confirmedEvent.CustomerId);
+        Assert.Equal(order.Total, confirmedEvent.Total);
     }
 
     // Test này chứng minh Evidence Day 41: order bị hủy phải phát OrderCancelledEvent để thông báo các bên liên quan tiến hành xử lý hủy.
@@ -48,6 +48,19 @@ public class OrderDomainEventsTests
 
         var cancelledEvent = Assert.IsType<OrderCancelledEvent>(order.DomainEvents.Single(x => x is OrderCancelledEvent));
         Assert.Equal(order.Id, cancelledEvent.OrderId);
-        Assert.Equal(order.CustomerId, cancelledEvent.CustomerId);
+        Assert.True(cancelledEvent.OccurredOn <= DateTime.UtcNow);
+    }
+
+    // Test này chứng minh Evidence Day 41: Outbox có thể xóa các event đã xử lý và aggregate không còn event chờ xử lý.
+    [Fact]
+    public void ClearDomainEvents_EmptiesList()
+    {
+        var order = Order.Place(CustomerId.New(), new Address("123 Lê Lợi", "Hà Nội", "Việt Nam", "100000"));
+
+        Assert.Single(order.DomainEvents);
+
+        order.ClearDomainEvents();
+
+        Assert.Empty(order.DomainEvents);
     }
 }

@@ -10,4 +10,4 @@ namespace OrderService.Domain.Events;
 /// Sự kiện báo hiệu đơn hàng đã bị hủy và cần xử lý các tác vụ phụ liên quan như giải phóng kho hoặc hoàn tiền.
 /// Event này cho phép các service khác biết trạng thái hủy của đơn mà không cần đọc trực tiếp aggregate.
 /// </summary>
-public sealed record OrderCancelledEvent(OrderId OrderId, CustomerId CustomerId, Money Total, DateTime OccurredOn) : IDomainEvent;
+public sealed record OrderCancelledEvent(OrderId OrderId, DateTime OccurredOn) : IDomainEvent;

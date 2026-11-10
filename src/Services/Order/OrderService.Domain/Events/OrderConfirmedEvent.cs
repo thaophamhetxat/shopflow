@@ -10,4 +10,4 @@ namespace OrderService.Domain.Events;
 /// Sự kiện báo hiệu đơn hàng đã được xác nhận và đang đi vào giai đoạn xử lý tiếp theo như reserve tồn kho và thanh toán.
 /// Event này giúp Outbox hoặc Saga biết rằng đơn hàng đã chốt và không còn ở trạng thái Pending.
 /// </summary>
-public sealed record OrderConfirmedEvent(OrderId OrderId, CustomerId CustomerId, Money Total, DateTime OccurredOn) : IDomainEvent;
+public sealed record OrderConfirmedEvent(OrderId OrderId, Money Total, DateTime OccurredOn) : IDomainEvent;

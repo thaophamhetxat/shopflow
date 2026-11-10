@@ -8,6 +8,6 @@ namespace OrderService.Application.Commands;
 
 /// <summary>
 /// Command yêu cầu hủy đơn hàng bằng mã order được chỉ định.
-/// Command này là request nghiệp vụ từ API hoặc workflow, và handler phụ trách lần lượt điều hướng tới aggregate hoặc service tương ứng.
+/// API hoặc workflow gửi yêu cầu này; handler sẽ điều hướng việc hủy và không trả về dữ liệu.
 /// </summary>
-public sealed record CancelOrderCommand(Guid OrderId) : IRequest<bool>;
+public sealed record CancelOrderCommand(Guid OrderId) : IRequest;
