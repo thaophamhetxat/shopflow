@@ -5,11 +5,13 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using OrderService.Infrastructure;
 
 // Tạo builder: nơi đăng ký dependency injection trước khi app khởi chạy.
 var builder = WebApplication.CreateBuilder(args);
 // Đăng ký health check: dùng để /health báo service còn sống và sẵn sàng nhận request.
 builder.Services.AddHealthChecks();
+builder.Services.AddInfrastructure(builder.Configuration);
 // Build app từ builder: sau bước này không đăng ký service mới được nữa.
 var app = builder.Build();
 // Map endpoint GET /health: trả OK để kiểm tra service còn sống và gắn probe cho sau này.
