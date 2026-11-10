@@ -2,27 +2,97 @@
 // Tạo ở Day 41 để layer Application có thể tự đăng ký handler và query/command khi service bắt đầu chạy.
 // Application layer này giữ các use case và DI, không chứa logic persistence.
 
+using System.Collections.Concurrent;
+using FluentValidation;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
+using OrderService.Application.Behaviors;
+using OrderService.Application.Idempotency;
+using OrderService.Domain.Aggregates;
+using OrderService.Domain.Repositories;
+using OrderService.Domain.ValueObjects;
 
 namespace OrderService.Application;
 
 /// <summary>
-/// Đăng ký toàn bộ handler, command và query của OrderService.Application theo assembly hiện tại.
+/// File này chứa extension method đăng ký toàn bộ pipeline của OrderService.Application.
+/// Layer Application dùng nó để nối MediatR, validation và logging trước khi handler chạy thực tế.
 /// </summary>
 public static class DependencyInjection
 {
     /// <summary>
-    /// Đăng ký MediatR để toàn bộ IRequestHandler trong assembly OrderService.Application có thể được resolve khi cần xử lý use case.
+    /// Đăng ký MediatR, FluentValidation và các behavior mở rộng để tất cả command/query đi qua validation và logging trước khi tới handler.
     /// </summary>
     /// <param name="services">Container DI hiện tại.</param>
-    /// <returns>Container DI đã được đăng ký ứng dụng Order.</returns>
+    /// <returns>Container DI đã có pipeline xử lý cho OrderService.Application.</returns>
     public static IServiceCollection AddApplication(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(DependencyInjection).Assembly));
+        services.AddLogging();
+        services.AddSingleton<IOrderRepository, InMemoryOrderRepository>();
+        services.AddSingleton<IIdempotencyStore, InMemoryIdempotencyStore>();
+
+        foreach (var validatorType in typeof(DependencyInjection).Assembly
+                     .GetTypes()
+                     .Where(type => type.IsClass && !type.IsAbstract && type.GetInterfaces().Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IValidator<>))))
+        {
+            foreach (var implementedInterface in validatorType.GetInterfaces()
+                         .Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IValidator<>)))
+            {
+                services.AddTransient(implementedInterface, validatorType);
+            }
+        }
+
+        services.AddMediatR(cfg =>
+        {
+            cfg.RegisterServicesFromAssembly(typeof(DependencyInjection).Assembly);
+            cfg.AddOpenBehavior(typeof(LoggingBehavior<,>));
+            cfg.AddOpenBehavior(typeof(ValidationBehavior<,>));
+        });
 
         return services;
+    }
+
+    private sealed class InMemoryOrderRepository : IOrderRepository
+    {
+        private readonly ConcurrentDictionary<OrderId, Order> _orders = new();
+
+        public Task AddAsync(Order order, CancellationToken cancellationToken = default)
+        {
+            _orders[order.Id] = order;
+            return Task.CompletedTask;
+        }
+
+        public Task<Order?> GetByIdAsync(OrderId id, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(_orders.TryGetValue(id, out var order) ? order : null);
+        }
+
+        public Task SaveChangesAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class InMemoryIdempotencyStore : IIdempotencyStore
+    {
+        private readonly ConcurrentDictionary<string, object?> _entries = new();
+
+        public Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default)
+        {
+            if (_entries.TryGetValue(key, out var value))
+            {
+                return Task.FromResult((T?)value);
+            }
+
+            return Task.FromResult(default(T));
+        }
+
+        public Task SetAsync<T>(string key, T value, TimeSpan ttl, CancellationToken cancellationToken = default)
+        {
+            _entries[key] = value;
+            return Task.CompletedTask;
+        }
     }
 }

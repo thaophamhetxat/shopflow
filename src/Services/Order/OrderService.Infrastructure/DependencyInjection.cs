@@ -5,7 +5,9 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using OrderService.Application.Idempotency;
 using OrderService.Domain.Repositories;
+using OrderService.Infrastructure.Idempotency;
 using OrderService.Infrastructure.Outbox;
 using OrderService.Infrastructure.Persistence;
 using OrderService.Infrastructure.Repositories;
@@ -13,12 +15,13 @@ using OrderService.Infrastructure.Repositories;
 namespace OrderService.Infrastructure;
 
 /// <summary>
-/// Đăng ký DbContext và IOrderRepository để ứng dụng Order có thể truy cập database PostgreSQL local qua EF Core.
+/// File này chứa extension method đăng ký DbContext, repository, Redis cache và store idempotency cho OrderService.Infrastructure.
+/// Layer Infrastructure dùng nó để gắn PostgreSQL + Redis thật qua DI, phục vụ handler Day 45.
 /// </summary>
 public static class DependencyInjection
 {
     /// <summary>
-    /// Đăng ký context và repository bằng connection string rõ ràng và ở dạng string đã có sẵn.
+    /// Đăng ký PostgreSQL, repository và Redis idempotency bằng connection string rõ ràng.
     /// </summary>
     /// <param name="services">Container DI hiện tại.</param>
     /// <param name="connectionString">Chuỗi kết nối PostgreSQL local dùng cho OrderDbContext.</param>
@@ -37,17 +40,19 @@ public static class DependencyInjection
         });
 
         services.AddScoped<IOrderRepository, OrderRepository>();
+        services.AddStackExchangeRedisCache(options => options.Configuration = "localhost:6379");
+        services.AddScoped<IIdempotencyStore, RedisIdempotencyStore>();
         services.AddHostedService<OutboxProcessor>();
 
         return services;
     }
 
     /// <summary>
-    /// Đăng ký infrastructure bằng cấu hình ứng dụng, đọc connection string OrderDb từ section ConnectionStrings.
+    /// Đăng ký infrastructure bằng cấu hình ứng dụng, đọc connection string OrderDb và Redis từ section ConnectionStrings.
     /// </summary>
     /// <param name="services">Container DI hiện tại.</param>
     /// <param name="configuration">Cấu hình đang chạy của ứng dụng.</param>
-    /// <returns>Container DI sau khi đăng ký OrderDbContext và repository.</returns>
+    /// <returns>Container DI sau khi đăng ký OrderDbContext, Redis cache và repository.</returns>
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -59,6 +64,18 @@ public static class DependencyInjection
             throw new InvalidOperationException("Thiếu connection string 'OrderDb' trong cấu hình application.");
         }
 
-        return services.AddInfrastructure(connectionString);
+        var redisConnectionString = configuration.GetConnectionString("Redis") ?? "localhost:6379";
+
+        services.AddDbContext<OrderDbContext>(options =>
+        {
+            options.UseNpgsql(connectionString);
+        });
+
+        services.AddStackExchangeRedisCache(options => options.Configuration = redisConnectionString);
+        services.AddScoped<IOrderRepository, OrderRepository>();
+        services.AddScoped<IIdempotencyStore, RedisIdempotencyStore>();
+        services.AddHostedService<OutboxProcessor>();
+
+        return services;
     }
 }

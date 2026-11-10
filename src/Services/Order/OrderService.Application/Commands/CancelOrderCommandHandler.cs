@@ -1,19 +1,47 @@
-// File này chứa handler khung cho command hủy đơn hàng.
-// Tạo ở Day 41 để đặt sẵn contract cho use case hủy đơn, còn repository/service thực tế sẽ được đưa vào các ngày sau.
-// Application layer này giữ thứ tự xử lý nghiệp vụ rõ ràng để sau này thêm repository mà không phá vỡ interface.
+// File này chứa handler hủy đơn hàng của OrderService.Application.
+// Tạo ở Day 45 để thực thi hành vi hủy trên aggregate đã được lưu trong PostgreSQL.
+// Application layer này kiểm tra tồn tại Order trước khi gọi Cancel để tránh hủy đơn không có thật.
 
 using MediatR;
+using OrderService.Domain.Repositories;
+using OrderService.Domain.ValueObjects;
 
 namespace OrderService.Application.Commands;
 
 /// <summary>
-/// Handler khung cho CancelOrderCommand, sẽ tải Order theo OrderId rồi gọi hành vi Cancel khi repository có mặt ở Day 42.
+/// Handler cho CancelOrderCommand, nạp Order theo OrderId, gọi domain Cancel khi order tồn tại và lưu lại trạng thái mới.
+/// Nếu không tìm thấy đơn tương ứng thì ném OrderNotFoundException để caller biết đây là lỗi nghiệp vụ rõ ràng.
 /// </summary>
 public sealed class CancelOrderCommandHandler : IRequestHandler<CancelOrderCommand>
 {
-    public Task Handle(CancelOrderCommand request, CancellationToken cancellationToken)
+    private readonly IOrderRepository _orderRepository;
+
+    /// <summary>
+    /// Khởi tạo handler với repository để đọc và lưu trạng thái Order trong PostgreSQL.
+    /// </summary>
+    /// <param name="orderRepository">Repository thực thi đọc và save aggregate Order.</param>
+    public CancelOrderCommandHandler(IOrderRepository orderRepository)
     {
-        // Chưa thể tải aggregate khi Day 41 chưa có repository; ném lỗi rõ ràng thay vì giả vờ hủy thành công hoặc thất bại.
-        throw new NotImplementedException("Chưa có repository để tải Order — Day 42 sẽ hoàn thiện handler này.");
+        _orderRepository = orderRepository;
+    }
+
+    /// <summary>
+    /// Tải Order theo OrderId và gọi Order.Cancel(); nếu không có đơn thì ném lỗi không tìm thấy.
+    /// </summary>
+    /// <param name="request">Command yêu cầu hủy order bằng Id.</param>
+    /// <param name="cancellationToken">Token hủy nếu request bị hủy giữa chừng.</param>
+    public async Task Handle(CancelOrderCommand request, CancellationToken cancellationToken)
+    {
+        var orderId = OrderId.From(request.OrderId);
+        var order = await _orderRepository.GetByIdAsync(orderId, cancellationToken);
+
+        if (order is null)
+        {
+            throw new OrderNotFoundException(request.OrderId);
+        }
+
+        // Gọi domain Cancel trên aggregate đã có: trạng thái chỉ được chuyển từ Pending/Confirmed sang Cancelled, không có state sai/phải trả về null.
+        order.Cancel();
+        await _orderRepository.SaveChangesAsync(cancellationToken);
     }
 }

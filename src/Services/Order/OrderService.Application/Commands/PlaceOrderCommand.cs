@@ -17,7 +17,8 @@ public sealed record PlaceOrderCommand(
     string City,
     string Country,
     string? PostalCode,
-    List<PlaceOrderItem> Items) : IRequest<OrderId>;
+    List<PlaceOrderItem> Items,
+    string? IdempotencyKey = null) : IRequest<OrderId>;
 
 /// <summary>
 /// Dữ liệu một dòng hàng do người gửi command cung cấp để handler tạo OrderItem trong Domain.
