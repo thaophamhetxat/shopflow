@@ -76,4 +76,32 @@ public sealed class OrderRepositoryIntegrationTests
             await context.Database.ExecuteSqlRawAsync("DELETE FROM orders;");
         }
     }
+
+    // Test này chứng minh Evidence Day 42: repository phải trả về null khi tìm kiếm Order theo Id chưa từng lưu, thay vì ném exception hoặc trả object rỗng.
+    [Fact]
+    public async Task GetById_ReturnsNull_WhenNotFound()
+    {
+        await using var context = CreateContext();
+        await context.Database.MigrateAsync();
+
+        await context.Database.ExecuteSqlRawAsync("DELETE FROM outbox_messages;");
+        await context.Database.ExecuteSqlRawAsync("DELETE FROM order_items;");
+        await context.Database.ExecuteSqlRawAsync("DELETE FROM orders;");
+
+        try
+        {
+            var repository = new OrderRepository(context);
+            var missingId = OrderId.New();
+
+            var result = await repository.GetByIdAsync(missingId);
+
+            Assert.Null(result);
+        }
+        finally
+        {
+            await context.Database.ExecuteSqlRawAsync("DELETE FROM outbox_messages;");
+            await context.Database.ExecuteSqlRawAsync("DELETE FROM order_items;");
+            await context.Database.ExecuteSqlRawAsync("DELETE FROM orders;");
+        }
+    }
 }

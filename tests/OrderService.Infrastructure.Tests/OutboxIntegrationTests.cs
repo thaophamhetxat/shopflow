@@ -1,7 +1,10 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using OrderService.Domain.Aggregates;
 using OrderService.Domain.Entities;
 using OrderService.Domain.ValueObjects;
+using OrderService.Infrastructure.Outbox;
 using OrderService.Infrastructure.Persistence;
 using Xunit;
 
@@ -29,6 +32,16 @@ public sealed class OutboxIntegrationTests
             .Options;
 
         return new OrderDbContext(options);
+    }
+
+    private static OutboxProcessor CreateProcessor()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddDbContext<OrderDbContext>(options => options.UseNpgsql(ConnectionString));
+
+        var provider = services.BuildServiceProvider();
+        return new OutboxProcessor(provider.GetRequiredService<IServiceScopeFactory>(), provider.GetRequiredService<ILogger<OutboxProcessor>>());
     }
 
     // Test này chứng minh Day 43: khi Order phát event trong `SaveChangesAsync`, EF Core ghi both `orders` và `outbox_messages` trong cùng transaction. Cần Docker Postgres đang chạy trên localhost:5432.
@@ -61,6 +74,81 @@ public sealed class OutboxIntegrationTests
                 outboxMessages,
                 first => Assert.EndsWith(nameof(OrderService.Domain.Events.OrderPlacedEvent), first.EventType),
                 second => Assert.EndsWith(nameof(OrderService.Domain.Events.OrderConfirmedEvent), second.EventType));
+        }
+        finally
+        {
+            await context.Database.ExecuteSqlRawAsync("DELETE FROM outbox_messages;");
+            await context.Database.ExecuteSqlRawAsync("DELETE FROM order_items;");
+            await context.Database.ExecuteSqlRawAsync("DELETE FROM orders;");
+        }
+    }
+
+    // Test này chứng minh Evidence Day 43: khi processor chạy một vòng xử lý, nó phải đọc outbox chưa xử lý và đánh dấu `ProcessedAt` cho message này bằng PostgreSQL thật.
+    [Fact]
+    public async Task OutboxProcessor_MarksProcessed()
+    {
+        await using var context = CreateContext();
+        await context.Database.MigrateAsync();
+
+        await context.Database.ExecuteSqlRawAsync("DELETE FROM outbox_messages;");
+        await context.Database.ExecuteSqlRawAsync("DELETE FROM order_items;");
+        await context.Database.ExecuteSqlRawAsync("DELETE FROM orders;");
+
+        try
+        {
+            var order = Order.Place(CustomerId.New(), new Address("789 Hai Bà Trưng", "Huế", "Vietnam", "500000"));
+            order.AddItem(new OrderItem(Guid.NewGuid(), 1, new Money(15m, "USD")));
+
+            await context.Orders.AddAsync(order);
+            await context.SaveChangesAsync();
+
+            var processor = CreateProcessor();
+            await processor.ProcessPendingAsync();
+
+            await using var verificationContext = CreateContext();
+            var persistedMessage = await verificationContext.OutboxMessages.AsNoTracking().SingleAsync();
+            Assert.NotNull(persistedMessage.ProcessedAt);
+        }
+        finally
+        {
+            await context.Database.ExecuteSqlRawAsync("DELETE FROM outbox_messages;");
+            await context.Database.ExecuteSqlRawAsync("DELETE FROM order_items;");
+            await context.Database.ExecuteSqlRawAsync("DELETE FROM orders;");
+        }
+    }
+
+    // Test này chứng minh Evidence Day 43: processor phải bỏ qua message đã xử lý, không đánh dấu lại `ProcessedAt` và không publish trùng trong lần xử lý thứ hai.
+    [Fact]
+    public async Task OutboxProcessor_SkipsAlreadyProcessed()
+    {
+        await using var context = CreateContext();
+        await context.Database.MigrateAsync();
+
+        await context.Database.ExecuteSqlRawAsync("DELETE FROM outbox_messages;");
+        await context.Database.ExecuteSqlRawAsync("DELETE FROM order_items;");
+        await context.Database.ExecuteSqlRawAsync("DELETE FROM orders;");
+
+        try
+        {
+            var order = Order.Place(CustomerId.New(), new Address("12 Lý Thường Kiệt", "Cần Thơ", "Vietnam", "700000"));
+            order.AddItem(new OrderItem(Guid.NewGuid(), 1, new Money(35m, "USD")));
+
+            await context.Orders.AddAsync(order);
+            await context.SaveChangesAsync();
+
+            var processor = CreateProcessor();
+            await processor.ProcessPendingAsync();
+
+            await using var firstVerificationContext = CreateContext();
+            var firstMessage = await firstVerificationContext.OutboxMessages.AsNoTracking().SingleAsync();
+            var firstProcessedAt = firstMessage.ProcessedAt;
+
+            await processor.ProcessPendingAsync();
+
+            await using var secondVerificationContext = CreateContext();
+            var messages = await secondVerificationContext.OutboxMessages.AsNoTracking().ToListAsync();
+            Assert.Single(messages);
+            Assert.Equal(firstProcessedAt, messages[0].ProcessedAt);
         }
         finally
         {

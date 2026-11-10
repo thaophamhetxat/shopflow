@@ -40,37 +40,17 @@ public sealed class OutboxProcessor : BackgroundService
     }
 
     /// <summary>
-    /// Chạy vòng đời của processor: poll message chưa xử lý từ database và phân phối chúng theo channel cho consumer xử lý song song.
+    /// Chạy vòng đời của processor: mỗi lần poll sẽ lấy tối đa 10 outbox message chưa xử lý, đưa vào channel và xử lý theo từng bản ghi trước khi lặp lại.
     /// </summary>
     /// <param name="stoppingToken">Token hủy do host yêu cầu dừng service.</param>
     /// <returns>Task chạy hết vòng đời worker nền; host sẽ chờ worker kết thúc khi shutdown.</returns>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var poller = PollPendingMessagesAsync(stoppingToken);
-        var consumer = ConsumePendingMessagesAsync(stoppingToken);
-
-        await Task.WhenAll(poller, consumer);
-    }
-
-    private async Task PollPendingMessagesAsync(CancellationToken stoppingToken)
-    {
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                await using var scope = _scopeFactory.CreateAsyncScope();
-                var dbContext = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
-
-                var messages = await dbContext.OutboxMessages
-                    .Where(x => x.ProcessedAt == null)
-                    .OrderBy(x => x.OccurredOn)
-                    .Take(20)
-                    .ToListAsync(stoppingToken);
-
-                foreach (var message in messages)
-                {
-                    await _channel.Writer.WriteAsync(message, stoppingToken);
-                }
+                await ProcessPendingAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -78,20 +58,56 @@ public sealed class OutboxProcessor : BackgroundService
             }
             catch (Exception exception)
             {
-                _logger.LogError(exception, "Không thể poll dữ liệu outbox trong vòng lặp processor.");
+                _logger.LogError(exception, "Không thể xử lý outbox message trong vòng lặp processor.");
             }
 
-            await Task.Delay(_pollInterval, stoppingToken);
+            try
+            {
+                await Task.Delay(_pollInterval, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
         }
     }
 
-    private async Task ConsumePendingMessagesAsync(CancellationToken stoppingToken)
+    /// <summary>
+    /// Thực hiện một vòng xử lý outbox: đọc tối đa 10 message chưa xử lý, đưa vào channel và đồng bộ xử lý từng message bằng `PublishAsync` trong scope/DbContext riêng.
+    /// Mỗi message chỉ được đánh dấu `ProcessedAt` khi đọc lại từ DB và vẫn còn `ProcessedAt == null`, để tránh publish trùng trong trường hợp race condition.
+    /// </summary>
+    /// <param name="cancellationToken">Token hủy của vòng xử lý hiện tại.</param>
+    /// <returns>Task hoàn tất sau khi tất cả message trong vòng này đã được publish và đánh dấu xử lý.</returns>
+    public async Task ProcessPendingAsync(CancellationToken cancellationToken = default)
     {
-        await foreach (var message in _channel.Reader.ReadAllAsync(stoppingToken))
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+
+        var pendingMessages = await dbContext.OutboxMessages
+            .Where(x => x.ProcessedAt == null)
+            .OrderBy(x => x.OccurredOn)
+            .Take(10)
+            .ToListAsync(cancellationToken);
+
+        if (pendingMessages.Count == 0)
         {
-            await _publishSemaphore.WaitAsync(stoppingToken);
-            _ = PublishAsync(message, stoppingToken);
+            return;
         }
+
+        foreach (var message in pendingMessages)
+        {
+            await _channel.Writer.WriteAsync(message, cancellationToken);
+        }
+
+        var publishTasks = new List<Task>();
+        for (var i = 0; i < pendingMessages.Count; i++)
+        {
+            var message = await _channel.Reader.ReadAsync(cancellationToken);
+            await _publishSemaphore.WaitAsync(cancellationToken);
+            publishTasks.Add(PublishAsync(message, cancellationToken));
+        }
+
+        await Task.WhenAll(publishTasks);
     }
 
     private async Task PublishAsync(OutboxMessage message, CancellationToken stoppingToken)
