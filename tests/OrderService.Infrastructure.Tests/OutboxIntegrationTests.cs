@@ -44,7 +44,10 @@ public sealed class OutboxIntegrationTests
         services.AddDbContext<OrderDbContext>(options => options.UseNpgsql(ConnectionString));
 
         var provider = services.BuildServiceProvider();
-        return new OutboxProcessor(provider.GetRequiredService<IServiceScopeFactory>(), provider.GetRequiredService<ILogger<OutboxProcessor>>());
+        return new OutboxProcessor(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            new FakeOutboxPublisher(),
+            provider.GetRequiredService<ILogger<OutboxProcessor>>());
     }
 
     // Test n�y ch?ng minh Day 43: khi Order ph�t event trong `SaveChangesAsync`, EF Core ghi both `orders` v� `outbox_messages` trong c�ng transaction. C?n Docker Postgres dang ch?y tr�n localhost:5432.

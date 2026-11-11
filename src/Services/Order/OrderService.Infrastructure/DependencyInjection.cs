@@ -52,7 +52,9 @@ public static class DependencyInjection
         services.RemoveAll<ISagaReservationRepository>();
         services.RemoveAll<IInventoryClient>();
         services.RemoveAll<IPaymentClient>();
+        services.RemoveAll<IOutboxPublisher>();
 
+        services.AddSingleton<IOutboxPublisher, RabbitMqOutboxPublisher>();
         services.AddScoped<IOrderRepository, OrderRepository>();
         services.AddScoped<IOrderReadModelRepository, OrderRepository>();
         services.AddScoped<IEventStore, EventStore>();
@@ -117,11 +119,13 @@ public static class DependencyInjection
         services.RemoveAll<ISagaReservationRepository>();
         services.RemoveAll<IInventoryClient>();
         services.RemoveAll<IPaymentClient>();
+        services.RemoveAll<IOutboxPublisher>();
 
         var inventoryBaseUrl = configuration["Saga:InventoryBaseUrl"] ?? "http://localhost:5140";
         var paymentBaseUrl = configuration["Saga:PaymentBaseUrl"] ?? "http://localhost:5199";
 
         services.AddStackExchangeRedisCache(options => options.Configuration = redisConnectionString);
+        services.AddSingleton<IOutboxPublisher, RabbitMqOutboxPublisher>();
         services.AddScoped<IOrderRepository, OrderRepository>();
         services.AddScoped<IOrderReadModelRepository, OrderRepository>();
         services.AddScoped<IEventStore, EventStore>();
