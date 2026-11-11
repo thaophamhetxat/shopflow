@@ -1,11 +1,13 @@
-// File này chứa extension method đăng ký DbContext và repository cho OrderService.Infrastructure.
-// Tạo ở Day 42 để layer Infrastructure có thể được thêm vào DI container bằng một bước duy nhất khi service khởi động.
-// Infrastructure này chịu trách nhiệm cung cấp dependency cho persistence, không chứa business logic hoặc API endpoint.
+// File này đăng ký persistence, repositories và HTTP clients cho OrderService.Infrastructure.
+// Day 54 gắn resilience chỉ vào PaymentService để OrderSaga nhận kết quả lỗi có thể bù trừ.
+// Day 55 có thể mở rộng saga mà không đổi phạm vi resilience của InventoryService.
 
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Http.Resilience;
+using Microsoft.Extensions.Logging;
 using OrderService.Application.Idempotency;
 using OrderService.Application.Queries;
 using OrderService.Application.Sagas;
@@ -69,7 +71,12 @@ public static class DependencyInjection
         services.AddHttpClient("PaymentService", client =>
         {
             client.BaseAddress = new Uri("http://localhost:5199");
-        });
+        }).AddResilienceHandler("payment", (builder, context) =>
+            PaymentResilience.ConfigurePipeline(
+                builder,
+                // PaymentResilience là lớp tĩnh nên dùng ILoggerFactory để tạo category tương ứng.
+                context.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger(nameof(PaymentResilience)),
+                PaymentResilienceOptions.Default));
 
         services.AddStackExchangeRedisCache(options => options.Configuration = "localhost:6379");
         services.AddScoped<IIdempotencyStore, RedisIdempotencyStore>();
@@ -130,7 +137,11 @@ public static class DependencyInjection
         services.AddHttpClient("PaymentService", client =>
         {
             client.BaseAddress = new Uri(paymentBaseUrl);
-        });
+        }).AddResilienceHandler("payment", (builder, context) =>
+            PaymentResilience.ConfigurePipeline(
+                builder,
+                context.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger(nameof(PaymentResilience)),
+                PaymentResilienceOptions.Default));
         services.AddScoped<IIdempotencyStore, RedisIdempotencyStore>();
         services.AddHostedService<OutboxProcessor>();
 

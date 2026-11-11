@@ -1,5 +1,4 @@
 using MediatR;
-using OrderService.Domain.Repositories;
 using OrderService.Domain.ValueObjects;
 
 namespace OrderService.Application.Queries;
@@ -10,13 +9,13 @@ namespace OrderService.Application.Queries;
 /// </summary>
 public sealed class ListOrdersByCustomerQueryHandler : IRequestHandler<ListOrdersByCustomerQuery, IReadOnlyList<OrderSummaryDto>>
 {
-    private readonly IOrderRepository _orderRepository;
+    private readonly IOrderReadModelRepository _orderRepository;
 
     /// <summary>
     /// Khởi tạo handler với repository đọc projection cho danh sách order theo customer.
     /// </summary>
     /// <param name="orderRepository">Repository thực thi query list summary bằng projection SQL.</param>
-    public ListOrdersByCustomerQueryHandler(IOrderRepository orderRepository)
+    public ListOrdersByCustomerQueryHandler(IOrderReadModelRepository orderRepository)
     {
         _orderRepository = orderRepository;
     }

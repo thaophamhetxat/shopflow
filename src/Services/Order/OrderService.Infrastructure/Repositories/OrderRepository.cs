@@ -16,7 +16,7 @@ namespace OrderService.Infrastructure.Repositories;
 /// Repository Entity Framework cho Aggregate Order, dùng DbContext để thêm, tải và lưu trạng thái aggregate vào PostgreSQL.
 /// Day 46 cài thêm read model projection cho GetOrderDetailAsync và ListOrderSummariesByCustomerAsync bằng Select + AsNoTracking để đáp ứng yêu cầu query lean.
 /// </summary>
-public sealed class OrderRepository : IOrderRepository
+public sealed class OrderRepository : IOrderRepository, IOrderReadModelRepository
 {
     private readonly OrderDbContext _dbContext;
 
@@ -64,27 +64,39 @@ public sealed class OrderRepository : IOrderRepository
     /// <returns>OrderDetailDto nếu order tồn tại, otherwise null.</returns>
     public async Task<OrderDetailDto?> GetOrderDetailAsync(OrderId id, CancellationToken cancellationToken = default)
     {
-        return await _dbContext.Orders
+        var order = await _dbContext.Orders
             .AsNoTracking()
-            .Where(currentOrder => currentOrder.Id == id)
-            .Select(currentOrder => new OrderDetailDto(
-                currentOrder.Id.Value,
-                currentOrder.CustomerId.Value,
-                currentOrder.Status.ToString(),
-                currentOrder.Items.Sum(item => item.LineTotal.Amount),
-                currentOrder.Items
-                    .Select(item => item.UnitPrice.Currency)
-                    .FirstOrDefault() ?? string.Empty,
-                currentOrder.CreatedAt,
-                currentOrder.Items
-                    .Select(item => new OrderDetailItemDto(
-                        item.ProductId,
-                        item.Quantity,
-                        item.UnitPrice.Amount,
-                        item.UnitPrice.Currency,
-                        item.LineTotal.Amount))
-                    .ToList()))
-            .FirstOrDefaultAsync(cancellationToken);
+            .Include(currentOrder => currentOrder.Items)
+            .FirstOrDefaultAsync(currentOrder => currentOrder.Id == id, cancellationToken);
+
+        if (order is null)
+        {
+            return null;
+        }
+
+        var items = order.Items.ToList();
+        var mappedItems = items
+            .Select(item => new OrderDetailItemDto(
+                item.ProductId,
+                item.Quantity,
+                item.UnitPrice.Amount,
+                item.UnitPrice.Currency,
+                item.LineTotal.Amount))
+            .ToList();
+
+        // Money được map thành chuỗi trong DB, `LineTotal` bị Ignore và `Status` ở DB là int nên các trường này không thể được project sang SQL tự nhiên.
+        // Vì vậy, order detail cần query đúng row chính của `orders` và `items` rồi map DTO trên CLR side để giữ thứ tự item thật của aggregate.
+        var totalAmount = items.Sum(item => item.LineTotal.Amount);
+        var totalCurrency = items.Select(item => item.UnitPrice.Currency).FirstOrDefault() ?? string.Empty;
+
+        return new OrderDetailDto(
+            order.Id.Value,
+            order.CustomerId.Value,
+            order.Status.ToString(),
+            totalAmount,
+            totalCurrency,
+            order.CreatedAt,
+            mappedItems);
     }
 
     /// <summary>
@@ -99,58 +111,49 @@ public sealed class OrderRepository : IOrderRepository
     {
         var boundedPageSize = Math.Clamp(pageSize, 1, 50);
 
-        if (cursor is not OrderId cursorOrderId)
+        DateTime? cursorCreatedAt = null;
+        if (cursor is OrderId cursorOrderId)
         {
-            return await _dbContext.Orders
+            cursorCreatedAt = await _dbContext.Orders
                 .AsNoTracking()
-                .Where(currentOrder => currentOrder.CustomerId == customerId)
-                .OrderByDescending(currentOrder => currentOrder.CreatedAt)
-                .ThenByDescending(currentOrder => currentOrder.Id)
-                .Select(currentOrder => new OrderSummaryDto(
-                    currentOrder.Id.Value,
-                    currentOrder.CustomerId.Value,
-                    currentOrder.Status.ToString(),
-                    currentOrder.Items.Sum(item => item.LineTotal.Amount),
-                    currentOrder.Items
-                        .Select(item => item.UnitPrice.Currency)
-                        .FirstOrDefault() ?? string.Empty,
-                    currentOrder.Items.Count(),
-                    currentOrder.CreatedAt))
-                .Take(boundedPageSize)
-                .ToListAsync(cancellationToken);
+                .Where(currentOrder => currentOrder.Id == cursorOrderId)
+                .Select(currentOrder => currentOrder.CreatedAt)
+                .SingleOrDefaultAsync(cancellationToken);
+
+            if (cursorCreatedAt == default && !await _dbContext.Orders.AsNoTracking().AnyAsync(currentOrder => currentOrder.Id == cursorOrderId, cancellationToken))
+            {
+                return Array.Empty<OrderSummaryDto>();
+            }
         }
 
-        var cursorCreatedAt = await _dbContext.Orders
+        var query = _dbContext.Orders
             .AsNoTracking()
-            .Where(currentOrder => currentOrder.Id == cursorOrderId)
-            .Select(currentOrder => currentOrder.CreatedAt)
-            .SingleOrDefaultAsync(cancellationToken);
+            .Include(currentOrder => currentOrder.Items)
+            .Where(currentOrder => currentOrder.CustomerId == customerId);
 
-        if (cursorCreatedAt == default && !await _dbContext.Orders.AsNoTracking().AnyAsync(currentOrder => currentOrder.Id == cursorOrderId, cancellationToken))
+        if (cursor is OrderId cursorOrderIdValue && cursorCreatedAt.HasValue)
         {
-            return Array.Empty<OrderSummaryDto>();
+            query = query.Where(currentOrder => currentOrder.CreatedAt < cursorCreatedAt.Value);
         }
 
-        return await _dbContext.Orders
-            .AsNoTracking()
-            .Where(currentOrder => currentOrder.CustomerId == customerId)
-            .Where(currentOrder =>
-                currentOrder.CreatedAt < cursorCreatedAt ||
-                (currentOrder.CreatedAt == cursorCreatedAt && currentOrder.Id.Value < cursorOrderId.Value))
+        var matchedOrders = await query
             .OrderByDescending(currentOrder => currentOrder.CreatedAt)
             .ThenByDescending(currentOrder => currentOrder.Id)
+            .Take(boundedPageSize)
+            .ToListAsync(cancellationToken);
+
+        // Cursor keyset và Take chỉ chạm tới các cột thường trong `orders` (`CustomerId`, `CreatedAt`, `Id`) nên EF Core dịch được sang SQL.
+        // `OrderId` là value object với converter Guid, nên so sánh `Id.Value` theo GUID trong SQL không được dịch; vì vậy giữ keyset theo `CreatedAt` và để map DTO ở memory sau khi SQL đã giới hạn đúng trang.
+        return matchedOrders
             .Select(currentOrder => new OrderSummaryDto(
                 currentOrder.Id.Value,
                 currentOrder.CustomerId.Value,
                 currentOrder.Status.ToString(),
-                currentOrder.Items.Sum(item => item.LineTotal.Amount),
-                currentOrder.Items
-                    .Select(item => item.UnitPrice.Currency)
-                    .FirstOrDefault() ?? string.Empty,
-                currentOrder.Items.Count(),
+                currentOrder.Total.Amount,
+                currentOrder.Items.Select(item => item.UnitPrice.Currency).FirstOrDefault() ?? string.Empty,
+                currentOrder.Items.Count,
                 currentOrder.CreatedAt))
-            .Take(boundedPageSize)
-            .ToListAsync(cancellationToken);
+            .ToList();
     }
 
     /// <summary>

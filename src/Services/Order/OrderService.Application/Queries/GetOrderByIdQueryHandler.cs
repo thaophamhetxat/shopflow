@@ -3,7 +3,6 @@
 // Day 46 cập nhật handler này để đọc bằng projection read model tách biệt, không nạp aggregate Order vào memory rồi map tay.
 
 using MediatR;
-using OrderService.Domain.Repositories;
 using OrderService.Domain.ValueObjects;
 
 namespace OrderService.Application.Queries;
@@ -14,13 +13,13 @@ namespace OrderService.Application.Queries;
 /// </summary>
 public sealed class GetOrderByIdQueryHandler : IRequestHandler<GetOrderByIdQuery, OrderDetailDto?>
 {
-    private readonly IOrderRepository _orderRepository;
+    private readonly IOrderReadModelRepository _orderRepository;
 
     /// <summary>
     /// Khởi tạo handler với repository truy vấn Order bằng read model projection thay cho aggregate entity.
     /// </summary>
     /// <param name="orderRepository">Repository dùng để đọc OrderDetailDto trực tiếp từ PostgreSQL.</param>
-    public GetOrderByIdQueryHandler(IOrderRepository orderRepository)
+    public GetOrderByIdQueryHandler(IOrderReadModelRepository orderRepository)
     {
         _orderRepository = orderRepository;
     }
