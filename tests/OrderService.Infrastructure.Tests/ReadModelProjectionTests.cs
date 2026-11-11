@@ -20,8 +20,11 @@ namespace OrderService.Infrastructure.Tests;
 /// <summary>
 /// Test tích hợp Day 46 chứng minh query đọc bằng projection và keyset pagination hoạt động trên PostgreSQL thật, cần Docker Postgres đang chạy ở localhost:5432.
 /// </summary>
+[Collection("Infrastructure Database")]
 public sealed class ReadModelProjectionTests
 {
+    private static readonly SemaphoreSlim DatabaseLock = DatabaseTestLock.Shared;
+
     private static ServiceProvider BuildServiceProvider()
     {
         var configuration = new ConfigurationBuilder()
@@ -66,45 +69,53 @@ public sealed class ReadModelProjectionTests
     [Fact]
     public async Task GetOrderById_Projection_ReturnsDetailDto()
     {
-        var provider = BuildServiceProvider();
-        var idempotencyKey = $"projection-detail-{Guid.NewGuid():N}";
-
+        await DatabaseLock.WaitAsync();
         try
         {
-            await ResetDatabaseAsync(provider, idempotencyKey);
-            var mediator = provider.GetRequiredService<IMediator>();
+            var provider = BuildServiceProvider();
+            var idempotencyKey = $"projection-detail-{Guid.NewGuid():N}";
 
-            var customerId = Guid.NewGuid();
-            var orderId = await mediator.Send(new PlaceOrderCommand(
-                customerId,
-                "12 Lê Lợi",
-                "Hà Nội",
-                "Việt Nam",
-                "100000",
-                new List<PlaceOrderItem>
-                {
-                    new(Guid.NewGuid(), 2, 25000m, "VND"),
-                    new(Guid.NewGuid(), 1, 15000m, "VND")
-                },
-                idempotencyKey));
+            try
+            {
+                await ResetDatabaseAsync(provider, idempotencyKey);
+                var mediator = provider.GetRequiredService<IMediator>();
 
-            var detail = await mediator.Send(new GetOrderByIdQuery(orderId.Value));
+                var customerId = Guid.NewGuid();
+                var orderId = await mediator.Send(new PlaceOrderCommand(
+                    customerId,
+                    "12 Lê Lợi",
+                    "Hà Nội",
+                    "Việt Nam",
+                    "100000",
+                    new List<PlaceOrderItem>
+                    {
+                        new(Guid.NewGuid(), 2, 25000m, "VND"),
+                        new(Guid.NewGuid(), 1, 15000m, "VND")
+                    },
+                    idempotencyKey));
 
-            Assert.NotNull(detail);
-            Assert.Equal(orderId.Value, detail!.OrderId);
-            Assert.Equal(customerId, detail.CustomerId);
-            Assert.Equal("Pending", detail.Status);
-            Assert.Equal(65000m, detail.TotalAmount);
-            Assert.Equal("VND", detail.TotalCurrency);
-            Assert.Equal(2, detail.Items.Count);
-            Assert.Equal(2, detail.Items[0].Quantity);
-            Assert.Equal(25000m, detail.Items[0].UnitPriceAmount);
-            Assert.Equal(50000m, detail.Items[0].LineTotalAmount);
+                var detail = await mediator.Send(new GetOrderByIdQuery(orderId.Value));
+
+                Assert.NotNull(detail);
+                Assert.Equal(orderId.Value, detail!.OrderId);
+                Assert.Equal(customerId, detail.CustomerId);
+                Assert.Equal("Pending", detail.Status);
+                Assert.Equal(65000m, detail.TotalAmount);
+                Assert.Equal("VND", detail.TotalCurrency);
+                Assert.Equal(2, detail.Items.Count);
+                Assert.Equal(2, detail.Items[0].Quantity);
+                Assert.Equal(25000m, detail.Items[0].UnitPriceAmount);
+                Assert.Equal(50000m, detail.Items[0].LineTotalAmount);
+            }
+            finally
+            {
+                await ResetDatabaseAsync(provider, idempotencyKey);
+                provider.Dispose();
+            }
         }
         finally
         {
-            await ResetDatabaseAsync(provider, idempotencyKey);
-            provider.Dispose();
+            DatabaseLock.Release();
         }
     }
 
@@ -112,21 +123,29 @@ public sealed class ReadModelProjectionTests
     [Fact]
     public async Task GetOrderById_Projection_ReturnsNull_WhenNotFound()
     {
-        var provider = BuildServiceProvider();
-
+        await DatabaseLock.WaitAsync();
         try
         {
-            await ResetDatabaseAsync(provider);
-            var mediator = provider.GetRequiredService<IMediator>();
+            var provider = BuildServiceProvider();
 
-            var result = await mediator.Send(new GetOrderByIdQuery(Guid.NewGuid()));
+            try
+            {
+                await ResetDatabaseAsync(provider);
+                var mediator = provider.GetRequiredService<IMediator>();
 
-            Assert.Null(result);
+                var result = await mediator.Send(new GetOrderByIdQuery(Guid.NewGuid()));
+
+                Assert.Null(result);
+            }
+            finally
+            {
+                await ResetDatabaseAsync(provider);
+                provider.Dispose();
+            }
         }
         finally
         {
-            await ResetDatabaseAsync(provider);
-            provider.Dispose();
+            DatabaseLock.Release();
         }
     }
 
@@ -134,53 +153,61 @@ public sealed class ReadModelProjectionTests
     [Fact]
     public async Task ListOrders_Keyset_FirstPage_ReturnsPageSize_InOrder()
     {
-        var provider = BuildServiceProvider();
-        var idempotencyKeys = Enumerable.Range(0, 5).Select(_ => $"page-one-{Guid.NewGuid():N}").ToList();
-
+        await DatabaseLock.WaitAsync();
         try
         {
-            await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
-            var mediator = provider.GetRequiredService<IMediator>();
-            var customerId = Guid.NewGuid();
-            var expectedOrderIds = new List<Guid>();
+            var provider = BuildServiceProvider();
+            var idempotencyKeys = Enumerable.Range(0, 5).Select(_ => $"page-one-{Guid.NewGuid():N}").ToList();
 
-            for (var index = 0; index < 5; index++)
+            try
             {
-                var orderId = await mediator.Send(new PlaceOrderCommand(
-                    customerId,
-                    $"{index + 1} Test Street",
-                    "Hà Nội",
-                    "Việt Nam",
-                    "100000",
-                    new List<PlaceOrderItem>
-                    {
-                        new(Guid.NewGuid(), 1, 100m + index, "USD")
-                    },
-                    idempotencyKeys[index]));
+                await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
+                var mediator = provider.GetRequiredService<IMediator>();
+                var customerId = Guid.NewGuid();
+                var expectedOrderIds = new List<Guid>();
 
-                expectedOrderIds.Add(orderId.Value);
-                await Task.Delay(25);
+                for (var index = 0; index < 5; index++)
+                {
+                    var orderId = await mediator.Send(new PlaceOrderCommand(
+                        customerId,
+                        $"{index + 1} Test Street",
+                        "Hà Nội",
+                        "Việt Nam",
+                        "100000",
+                        new List<PlaceOrderItem>
+                        {
+                            new(Guid.NewGuid(), 1, 100m + index, "USD")
+                        },
+                        idempotencyKeys[index]));
+
+                    expectedOrderIds.Add(orderId.Value);
+                    await Task.Delay(25);
+                }
+
+                var actualPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, null, 2));
+
+                using var scope = provider.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+                var expectedOrderIdsFromDb = await dbContext.Orders
+                    .Where(order => order.CustomerId == CustomerId.From(customerId))
+                    .OrderByDescending(order => order.CreatedAt)
+                    .ThenByDescending(order => order.Id)
+                    .Select(order => order.Id.Value)
+                    .Take(2)
+                    .ToListAsync();
+
+                Assert.Equal(2, actualPage.Count);
+                Assert.Equal(expectedOrderIdsFromDb, actualPage.Select(dto => dto.OrderId).ToList());
             }
-
-            var actualPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, null, 2));
-
-            using var scope = provider.CreateScope();
-            var dbContext = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
-            var expectedOrderIdsFromDb = await dbContext.Orders
-                .Where(order => order.CustomerId == CustomerId.From(customerId))
-                .OrderByDescending(order => order.CreatedAt)
-                .ThenByDescending(order => order.Id)
-                .Select(order => order.Id.Value)
-                .Take(2)
-                .ToListAsync();
-
-            Assert.Equal(2, actualPage.Count);
-            Assert.Equal(expectedOrderIdsFromDb, actualPage.Select(dto => dto.OrderId).ToList());
+            finally
+            {
+                await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
+                provider.Dispose();
+            }
         }
         finally
         {
-            await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
-            provider.Dispose();
+            DatabaseLock.Release();
         }
     }
 
@@ -188,58 +215,66 @@ public sealed class ReadModelProjectionTests
     [Fact]
     public async Task ListOrders_Keyset_SecondPage_ReturnsNextOrders_NoOverlap()
     {
-        var provider = BuildServiceProvider();
-        var idempotencyKeys = Enumerable.Range(0, 5).Select(_ => $"page-two-{Guid.NewGuid():N}").ToList();
-
+        await DatabaseLock.WaitAsync();
         try
         {
-            await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
-            var mediator = provider.GetRequiredService<IMediator>();
-            var customerId = Guid.NewGuid();
-            var createdOrderIds = new List<Guid>();
+            var provider = BuildServiceProvider();
+            var idempotencyKeys = Enumerable.Range(0, 5).Select(_ => $"page-two-{Guid.NewGuid():N}").ToList();
 
-            for (var index = 0; index < 5; index++)
+            try
             {
-                var orderId = await mediator.Send(new PlaceOrderCommand(
-                    customerId,
-                    $"{index + 1} Cursor Street",
-                    "Đà Nẵng",
-                    "Việt Nam",
-                    "500000",
-                    new List<PlaceOrderItem>
-                    {
-                        new(Guid.NewGuid(), 1, 200m + index, "USD")
-                    },
-                    idempotencyKeys[index]));
+                await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
+                var mediator = provider.GetRequiredService<IMediator>();
+                var customerId = Guid.NewGuid();
+                var createdOrderIds = new List<Guid>();
 
-                createdOrderIds.Add(orderId.Value);
-                await Task.Delay(25);
+                for (var index = 0; index < 5; index++)
+                {
+                    var orderId = await mediator.Send(new PlaceOrderCommand(
+                        customerId,
+                        $"{index + 1} Cursor Street",
+                        "Đà Nẵng",
+                        "Việt Nam",
+                        "500000",
+                        new List<PlaceOrderItem>
+                        {
+                            new(Guid.NewGuid(), 1, 200m + index, "USD")
+                        },
+                        idempotencyKeys[index]));
+
+                    createdOrderIds.Add(orderId.Value);
+                    await Task.Delay(25);
+                }
+
+                var firstPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, null, 2));
+                var cursorOrderId = firstPage[^1].OrderId;
+                var secondPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, cursorOrderId, 2));
+
+                Assert.Equal(2, secondPage.Count);
+                Assert.Empty(firstPage.Select(dto => dto.OrderId).Intersect(secondPage.Select(dto => dto.OrderId)));
+
+                using var scope = provider.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+                var expectedOrderIdsFromDb = await dbContext.Orders
+                    .Where(order => order.CustomerId == CustomerId.From(customerId))
+                    .OrderByDescending(order => order.CreatedAt)
+                    .ThenByDescending(order => order.Id)
+                    .Select(order => order.Id.Value)
+                    .Skip(2)
+                    .Take(2)
+                    .ToListAsync();
+
+                Assert.Equal(expectedOrderIdsFromDb, secondPage.Select(dto => dto.OrderId).ToList());
             }
-
-            var firstPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, null, 2));
-            var cursorOrderId = firstPage[^1].OrderId;
-            var secondPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, cursorOrderId, 2));
-
-            Assert.Equal(2, secondPage.Count);
-            Assert.Empty(firstPage.Select(dto => dto.OrderId).Intersect(secondPage.Select(dto => dto.OrderId)));
-
-            using var scope = provider.CreateScope();
-            var dbContext = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
-            var expectedOrderIdsFromDb = await dbContext.Orders
-                .Where(order => order.CustomerId == CustomerId.From(customerId))
-                .OrderByDescending(order => order.CreatedAt)
-                .ThenByDescending(order => order.Id)
-                .Select(order => order.Id.Value)
-                .Skip(2)
-                .Take(2)
-                .ToListAsync();
-
-            Assert.Equal(expectedOrderIdsFromDb, secondPage.Select(dto => dto.OrderId).ToList());
+            finally
+            {
+                await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
+                provider.Dispose();
+            }
         }
         finally
         {
-            await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
-            provider.Dispose();
+            DatabaseLock.Release();
         }
     }
 
@@ -247,23 +282,31 @@ public sealed class ReadModelProjectionTests
     [Fact]
     public async Task ListOrders_NoOrders_ReturnsEmpty()
     {
-        var provider = BuildServiceProvider();
-
+        await DatabaseLock.WaitAsync();
         try
         {
-            await ResetDatabaseAsync(provider);
-            var mediator = provider.GetRequiredService<IMediator>();
-            var customerId = Guid.NewGuid();
+            var provider = BuildServiceProvider();
 
-            var results = await mediator.Send(new ListOrdersByCustomerQuery(customerId, null, 20));
+            try
+            {
+                await ResetDatabaseAsync(provider);
+                var mediator = provider.GetRequiredService<IMediator>();
+                var customerId = Guid.NewGuid();
 
-            Assert.NotNull(results);
-            Assert.Empty(results);
+                var results = await mediator.Send(new ListOrdersByCustomerQuery(customerId, null, 20));
+
+                Assert.NotNull(results);
+                Assert.Empty(results);
+            }
+            finally
+            {
+                await ResetDatabaseAsync(provider);
+                provider.Dispose();
+            }
         }
         finally
         {
-            await ResetDatabaseAsync(provider);
-            provider.Dispose();
+            DatabaseLock.Release();
         }
     }
 }

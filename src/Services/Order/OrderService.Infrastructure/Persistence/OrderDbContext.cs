@@ -6,6 +6,7 @@ using System.Globalization;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using OrderService.Application.Sagas;
 using OrderService.Domain.Aggregates;
 using OrderService.Domain.Entities;
 using OrderService.Domain.Enums;
@@ -36,6 +37,11 @@ public sealed class OrderDbContext : DbContext
     /// Set chứa các message đã được ghi vào outbox để chờ processor phát đi sau khi Order được lưu thành công.
     /// </summary>
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
+
+    /// <summary>
+    /// Set lưu trạng thái công việc của Saga theo từng order để worker có thể recover sau restart.
+    /// </summary>
+    public DbSet<SagaState> SagaStates => Set<SagaState>();
 
     /// <summary>
     /// Ghi sự kiện domain ra outbox trong cùng transaction với Order để đảm bảo dữ liệu không bị lệch giữa lưu đơn và lưu event.
@@ -107,6 +113,24 @@ public sealed class OrderDbContext : DbContext
 
             outboxBuilder.HasIndex(x => x.ProcessedAt)
                 .HasDatabaseName("ix_outbox_messages_processed_at");
+        });
+
+        modelBuilder.Entity<SagaState>(sagaBuilder =>
+        {
+            sagaBuilder.ToTable("saga_state");
+            sagaBuilder.HasKey(x => x.OrderId);
+
+            sagaBuilder.Property(x => x.OrderId)
+                .HasColumnName("order_id")
+                .ValueGeneratedNever();
+
+            sagaBuilder.Property(x => x.State)
+                .HasColumnName("state")
+                .IsRequired();
+
+            sagaBuilder.Property(x => x.UpdatedAt)
+                .HasColumnName("updated_at")
+                .IsRequired();
         });
 
         EntityTypeBuilder<Order> orderBuilder = modelBuilder.Entity<Order>();

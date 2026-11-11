@@ -7,11 +7,13 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using OrderService.Application.Idempotency;
+using OrderService.Application.Sagas;
 using OrderService.Domain.Repositories;
 using OrderService.Infrastructure.Idempotency;
 using OrderService.Infrastructure.Outbox;
 using OrderService.Infrastructure.Persistence;
 using OrderService.Infrastructure.Repositories;
+using OrderService.Infrastructure.Sagas;
 
 namespace OrderService.Infrastructure;
 
@@ -42,7 +44,29 @@ public static class DependencyInjection
 
         services.RemoveAll<IOrderRepository>();
         services.RemoveAll<IIdempotencyStore>();
+        services.RemoveAll<IOrderSaga>();
+        services.RemoveAll<ISagaStateRepository>();
+        services.RemoveAll<IInventoryClient>();
+        services.RemoveAll<IPaymentClient>();
+
         services.AddScoped<IOrderRepository, OrderRepository>();
+        services.AddScoped<IOrderSaga, OrderSaga>();
+        services.AddScoped<ISagaStateRepository, SagaStateRepository>();
+        services.AddScoped<IInventoryClient, InventoryHttpClient>();
+        services.AddScoped<IPaymentClient, PaymentHttpClient>();
+
+        services.AddHttpClient("InventoryService", client =>
+        {
+            client.BaseAddress = new Uri("http://localhost:5140");
+            client.Timeout = TimeSpan.FromSeconds(10);
+        });
+
+        services.AddHttpClient("PaymentService", client =>
+        {
+            client.BaseAddress = new Uri("http://localhost:5199");
+            client.Timeout = TimeSpan.FromSeconds(10);
+        });
+
         services.AddStackExchangeRedisCache(options => options.Configuration = "localhost:6379");
         services.AddScoped<IIdempotencyStore, RedisIdempotencyStore>();
         services.AddHostedService<OutboxProcessor>();
@@ -76,8 +100,30 @@ public static class DependencyInjection
 
         services.RemoveAll<IOrderRepository>();
         services.RemoveAll<IIdempotencyStore>();
+        services.RemoveAll<IOrderSaga>();
+        services.RemoveAll<ISagaStateRepository>();
+        services.RemoveAll<IInventoryClient>();
+        services.RemoveAll<IPaymentClient>();
+
+        var inventoryBaseUrl = configuration["Services:Inventory:BaseUrl"] ?? "http://localhost:5140";
+        var paymentBaseUrl = configuration["Services:Payment:BaseUrl"] ?? "http://localhost:5199";
+
         services.AddStackExchangeRedisCache(options => options.Configuration = redisConnectionString);
         services.AddScoped<IOrderRepository, OrderRepository>();
+        services.AddScoped<IOrderSaga, OrderSaga>();
+        services.AddScoped<ISagaStateRepository, SagaStateRepository>();
+        services.AddScoped<IInventoryClient, InventoryHttpClient>();
+        services.AddScoped<IPaymentClient, PaymentHttpClient>();
+        services.AddHttpClient("InventoryService", client =>
+        {
+            client.BaseAddress = new Uri(inventoryBaseUrl);
+            client.Timeout = TimeSpan.FromSeconds(10);
+        });
+        services.AddHttpClient("PaymentService", client =>
+        {
+            client.BaseAddress = new Uri(paymentBaseUrl);
+            client.Timeout = TimeSpan.FromSeconds(10);
+        });
         services.AddScoped<IIdempotencyStore, RedisIdempotencyStore>();
         services.AddHostedService<OutboxProcessor>();
 

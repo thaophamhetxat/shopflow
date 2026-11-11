@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <BuildInParallel>false</BuildInParallel>
+    <RestoreDisableParallel>true</RestoreDisableParallel>
+    <TestTfmsInParallel>false</TestTfmsInParallel>
+  </PropertyGroup>
+</Project>

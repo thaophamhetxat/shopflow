@@ -6,13 +6,14 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using OrderService.Application.Sagas;
 using OrderService.Infrastructure.Persistence;
 
 namespace OrderService.Infrastructure.Outbox;
 
 /// <summary>
-/// Background service đọc message chưa xử lý từ bảng outbox, đẩy sang channel để consumer publish theo hàng đợi và giới hạn concurrency bằng SemaphoreSlim.
-/// Processor này là worker nền của Day 43: nó không gửi message sang RabbitMQ thật, chỉ ghi log và xác nhận đã xử lý bằng `ProcessedAt`.
+/// Background service đọc message chưa xử lý từ bảng outbox, đẩy sang channel để consumer xử lý theo hàng đợi và giới hạn concurrency bằng SemaphoreSlim.
+/// Day 52 mở rộng worker này: khi gặp `OrderPlacedEvent`, nó gọi trực tiếp `OrderSaga` của Order Service để điều phối Reserve -> Pay -> Confirm mà không nối RabbitMQ.
 /// </summary>
 public sealed class OutboxProcessor : BackgroundService
 {
@@ -125,12 +126,26 @@ public sealed class OutboxProcessor : BackgroundService
                 return;
             }
 
-            // Day 43 publish = ghi log + đánh dấu ProcessedAt, CHƯA publish sang RabbitMQ thật (Day 52 mới nối broker): đừng tưởng message đã tới service khác.
             _logger.LogInformation(
                 "Đã publish message outbox {EventType} cho aggregate {AggregateType}/{AggregateId}.",
                 persistedMessage.EventType,
                 persistedMessage.AggregateType,
                 persistedMessage.AggregateId);
+
+            if (persistedMessage.EventType.EndsWith("OrderPlacedEvent", StringComparison.Ordinal))
+            {
+                var orderSaga = scope.ServiceProvider.GetService<IOrderSaga>();
+                if (orderSaga is not null && Guid.TryParse(persistedMessage.AggregateId, out var orderId))
+                {
+                    await orderSaga.RunAsync(orderId, stoppingToken);
+                }
+                else if (orderSaga is null)
+                {
+                    _logger.LogDebug(
+                        "Bỏ qua trigger OrderSaga cho {EventType} vì không có IOrderSaga được đăng ký trong container.",
+                        persistedMessage.EventType);
+                }
+            }
 
             persistedMessage.ProcessedAt = DateTime.UtcNow;
             await dbContext.SaveChangesAsync(stoppingToken);

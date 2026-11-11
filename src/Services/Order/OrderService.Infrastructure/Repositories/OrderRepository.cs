@@ -50,9 +50,12 @@ public sealed class OrderRepository : IOrderRepository
     /// <returns>Order đã tải kèm items nếu tồn tại, ngược lại null.</returns>
     public async Task<Order?> GetByIdAsync(OrderId id, CancellationToken cancellationToken = default)
     {
-        return await _dbContext.Orders
+        var idValue = id.Value;
+        var orders = await _dbContext.Orders
             .Include(order => order.Items)
-            .FirstOrDefaultAsync(order => order.Id == id, cancellationToken);
+            .ToListAsync(cancellationToken);
+
+        return orders.FirstOrDefault(order => order.Id.Value == idValue);
     }
 
     /// <summary>
@@ -64,27 +67,39 @@ public sealed class OrderRepository : IOrderRepository
     /// <returns>OrderDetailDto nếu order tồn tại, otherwise null.</returns>
     public async Task<OrderDetailDto?> GetOrderDetailAsync(OrderId id, CancellationToken cancellationToken = default)
     {
-        return await _dbContext.Orders
+        var idValue = id.Value;
+        var orders = await _dbContext.Orders
             .AsNoTracking()
-            .Where(currentOrder => currentOrder.Id == id)
-            .Select(currentOrder => new OrderDetailDto(
-                currentOrder.Id.Value,
-                currentOrder.CustomerId.Value,
-                currentOrder.Status.ToString(),
-                currentOrder.Items.Sum(item => item.LineTotal.Amount),
-                currentOrder.Items
-                    .Select(item => item.UnitPrice.Currency)
-                    .FirstOrDefault() ?? string.Empty,
-                currentOrder.CreatedAt,
-                currentOrder.Items
-                    .Select(item => new OrderDetailItemDto(
-                        item.ProductId,
-                        item.Quantity,
-                        item.UnitPrice.Amount,
-                        item.UnitPrice.Currency,
-                        item.LineTotal.Amount))
-                    .ToList()))
-            .FirstOrDefaultAsync(cancellationToken);
+            .Include(currentOrder => currentOrder.Items)
+            .ToListAsync(cancellationToken);
+
+        var order = orders.FirstOrDefault(currentOrder => currentOrder.Id.Value == idValue);
+        if (order is null)
+        {
+            return null;
+        }
+
+        var items = order.Items
+            .OrderBy(item => item.ProductId)
+            .Select(item => new OrderDetailItemDto(
+                item.ProductId,
+                item.Quantity,
+                item.UnitPrice.Amount,
+                item.UnitPrice.Currency,
+                item.UnitPrice.Amount * item.Quantity))
+            .ToList();
+
+        var totalAmount = items.Sum(item => item.LineTotalAmount);
+        var currency = items.FirstOrDefault()?.UnitPriceCurrency ?? "USD";
+
+        return new OrderDetailDto(
+            order.Id.Value,
+            order.CustomerId.Value,
+            order.Status.ToString(),
+            totalAmount,
+            currency,
+            order.CreatedAt,
+            items);
     }
 
     /// <summary>
@@ -98,59 +113,52 @@ public sealed class OrderRepository : IOrderRepository
     public async Task<IReadOnlyList<OrderSummaryDto>> ListOrderSummariesByCustomerAsync(CustomerId customerId, OrderId? cursor, int pageSize, CancellationToken cancellationToken = default)
     {
         var boundedPageSize = Math.Clamp(pageSize, 1, 50);
+        var customerIdValue = customerId.Value;
 
-        if (cursor is not OrderId cursorOrderId)
-        {
-            return await _dbContext.Orders
-                .AsNoTracking()
-                .Where(currentOrder => currentOrder.CustomerId == customerId)
-                .OrderByDescending(currentOrder => currentOrder.CreatedAt)
-                .ThenByDescending(currentOrder => currentOrder.Id)
-                .Select(currentOrder => new OrderSummaryDto(
-                    currentOrder.Id.Value,
-                    currentOrder.CustomerId.Value,
-                    currentOrder.Status.ToString(),
-                    currentOrder.Items.Sum(item => item.LineTotal.Amount),
-                    currentOrder.Items
-                        .Select(item => item.UnitPrice.Currency)
-                        .FirstOrDefault() ?? string.Empty,
-                    currentOrder.Items.Count(),
-                    currentOrder.CreatedAt))
-                .Take(boundedPageSize)
-                .ToListAsync(cancellationToken);
-        }
-
-        var cursorCreatedAt = await _dbContext.Orders
+        var orders = await _dbContext.Orders
             .AsNoTracking()
-            .Where(currentOrder => currentOrder.Id == cursorOrderId)
-            .Select(currentOrder => currentOrder.CreatedAt)
-            .SingleOrDefaultAsync(cancellationToken);
-
-        if (cursorCreatedAt == default && !await _dbContext.Orders.AsNoTracking().AnyAsync(currentOrder => currentOrder.Id == cursorOrderId, cancellationToken))
-        {
-            return Array.Empty<OrderSummaryDto>();
-        }
-
-        return await _dbContext.Orders
-            .AsNoTracking()
-            .Where(currentOrder => currentOrder.CustomerId == customerId)
-            .Where(currentOrder =>
-                currentOrder.CreatedAt < cursorCreatedAt ||
-                (currentOrder.CreatedAt == cursorCreatedAt && currentOrder.Id.Value < cursorOrderId.Value))
-            .OrderByDescending(currentOrder => currentOrder.CreatedAt)
-            .ThenByDescending(currentOrder => currentOrder.Id)
-            .Select(currentOrder => new OrderSummaryDto(
-                currentOrder.Id.Value,
-                currentOrder.CustomerId.Value,
-                currentOrder.Status.ToString(),
-                currentOrder.Items.Sum(item => item.LineTotal.Amount),
-                currentOrder.Items
-                    .Select(item => item.UnitPrice.Currency)
-                    .FirstOrDefault() ?? string.Empty,
-                currentOrder.Items.Count(),
-                currentOrder.CreatedAt))
-            .Take(boundedPageSize)
+            .Include(currentOrder => currentOrder.Items)
             .ToListAsync(cancellationToken);
+
+        var customerOrders = orders
+            .Where(currentOrder => currentOrder.CustomerId.Value == customerIdValue)
+            .OrderByDescending(currentOrder => currentOrder.CreatedAt)
+            .ThenByDescending(currentOrder => currentOrder.Id.Value)
+            .ToList();
+
+        if (cursor is OrderId cursorOrderId)
+        {
+            var cursorOrder = customerOrders.FirstOrDefault(currentOrder => currentOrder.Id.Value == cursorOrderId.Value);
+            if (cursorOrder is null)
+            {
+                return Array.Empty<OrderSummaryDto>();
+            }
+
+            customerOrders = customerOrders
+                .Where(currentOrder =>
+                    currentOrder.CreatedAt < cursorOrder.CreatedAt ||
+                    (currentOrder.CreatedAt == cursorOrder.CreatedAt && currentOrder.Id.Value < cursorOrderId.Value))
+                .ToList();
+        }
+
+        return customerOrders
+            .Take(boundedPageSize)
+            .Select(order =>
+            {
+                var items = order.Items.ToList();
+                var totalAmount = items.Sum(item => item.UnitPrice.Amount * item.Quantity);
+                var currency = items.FirstOrDefault()?.UnitPrice.Currency ?? "USD";
+
+                return new OrderSummaryDto(
+                    order.Id.Value,
+                    order.CustomerId.Value,
+                    order.Status.ToString(),
+                    totalAmount,
+                    currency,
+                    items.Count,
+                    order.CreatedAt);
+            })
+            .ToList();
     }
 
     /// <summary>

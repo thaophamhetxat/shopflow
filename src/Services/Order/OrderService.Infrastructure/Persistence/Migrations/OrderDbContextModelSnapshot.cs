@@ -22,6 +22,26 @@ namespace OrderService.Infrastructure.Persistence.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("OrderService.Application.Sagas.SagaState", b =>
+                {
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("order_id");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("state");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("OrderId");
+
+                    b.ToTable("saga_state", (string)null);
+                });
+
             modelBuilder.Entity("OrderService.Domain.Aggregates.Order", b =>
                 {
                     b.Property<Guid>("Id")

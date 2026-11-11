@@ -1,5 +1,10 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
+  <ItemGroup>
+    <Compile Include="..\OrderService.Application\Queries\OrderDetailDto.cs" Link="Queries\OrderDetailDto.cs" />
+    <Compile Include="..\OrderService.Application\Queries\OrderSummaryDto.cs" Link="Queries\OrderSummaryDto.cs" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
