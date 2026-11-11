@@ -10,6 +10,32 @@ using OrderService.Domain.ValueObjects;
 
 namespace OrderService.Domain.Aggregates;
 
+public sealed record OrderSnapshotData(
+    Guid OrderId,
+    Guid CustomerId,
+    IReadOnlyList<OrderItem> Items,
+    Address ShippingAddress,
+    OrderStatus Status,
+    decimal TotalAmount,
+    string TotalCurrency,
+    int Version,
+    DateTime CreatedAt)
+{
+    public static OrderSnapshotData FromOrder(Order order)
+    {
+        return new OrderSnapshotData(
+            order.Id.Value,
+            order.CustomerId.Value,
+            order.Items.ToList(),
+            order.ShippingAddress,
+            order.Status,
+            order.Total.Amount,
+            order.Total.Currency,
+            order.Version,
+            order.CreatedAt);
+    }
+}
+
 /// <summary>
 /// Aggregate Root đại diện cho một đơn hàng trong ShopFlow, bao gồm trạng thái, địa chỉ giao hàng, khách hàng và toàn bộ dòng hàng của đơn.
 /// Ranh giới nhất quán của nó là Order + các OrderItem bên trong; không ai được sửa OrderItem trực tiếp bên ngoài, mọi thay đổi đều phải đi qua AddItem để giữ tính toàn vẹn của tổng tiền và trạng thái đơn.
@@ -20,22 +46,22 @@ public sealed class Order
     private readonly List<OrderItem> _items;
     private readonly List<IDomainEvent> _domainEvents;
     private OrderStatus _status;
-    private readonly DateTime _createdAt;
+    private DateTime _createdAt;
 
     /// <summary>
     /// Mã định danh duy nhất của đơn hàng, được sinh khi đặt đơn và không bao giờ thay đổi.
     /// </summary>
-    public OrderId Id { get; }
+    public OrderId Id { get; private set; }
 
     /// <summary>
     /// Mã khách hàng sở hữu đơn hàng, được gán ngay khi Order được tạo.
     /// </summary>
-    public CustomerId CustomerId { get; }
+    public CustomerId CustomerId { get; private set; }
 
     /// <summary>
     /// Địa chỉ giao hàng được lưu cùng đơn hàng và không cho phép thay đổi trực tiếp từ bên ngoài.
     /// </summary>
-    public Address ShippingAddress { get; }
+    public Address ShippingAddress { get; private set; }
 
     /// <summary>
     /// Trạng thái hiện tại của đơn hàng, chỉ có thể thay đổi qua Confirm hoặc Cancel.
@@ -45,7 +71,17 @@ public sealed class Order
     /// <summary>
     /// Thời điểm tạo đơn, được ghi khi Place được gọi và không bao giờ đổi sau đó.
     /// </summary>
-    public DateTime CreatedAt => _createdAt;
+    public DateTime CreatedAt
+    {
+        get => _createdAt;
+        private set => _createdAt = value;
+    }
+
+    /// <summary>
+    /// Version của stream event tương ứng với số lượng domain event đã phát sinh và replay xong trên aggregate.
+    /// Mỗi event mới đều tăng lên 1, và mỗi lần Apply replay 1 event cũng tăng lên 1 để Version phản ánh đúng stream state.
+    /// </summary>
+    public int Version { get; private set; }
 
     /// <summary>
     /// Danh sách dòng hàng của đơn hàng, được trả về dạng chỉ đọc để ngăn sửa trực tiếp bên ngoài aggregate.
@@ -72,6 +108,7 @@ public sealed class Order
         _status = OrderStatus.Pending;
         _items = new List<OrderItem>();
         _domainEvents = new List<IDomainEvent>();
+        Version = 0;
     }
 
     /// <summary>
@@ -85,7 +122,31 @@ public sealed class Order
         var order = new Order(OrderId.New(), customerId, shippingAddress, DateTime.UtcNow);
 
         // Phát OrderPlacedEvent: đơn vừa được tạo là sự kiện nghiệp vụ mà Outbox (Day 43) sẽ ghi lại để các service khác biết về việc đặt hàng mới.
-        order.AddDomainEvent(new OrderPlacedEvent(order.Id, order.CustomerId, order.Total, DateTime.UtcNow));
+        // Event này cần mang cả Items và ShippingAddress vì event stream là source of truth; nếu không có dữ liệu này, replay không thể tái dựng lại order đã đặt một cách đúng đắn.
+        order.AddDomainEvent(new OrderPlacedEvent(order.Id, order.CustomerId, order.Items, order.ShippingAddress, order.Total, DateTime.UtcNow));
+
+        return order;
+    }
+
+    public static Order FromSnapshot(OrderSnapshotData snapshot)
+    {
+        var order = new Order(
+            OrderId.From(snapshot.OrderId),
+            CustomerId.From(snapshot.CustomerId),
+            snapshot.ShippingAddress,
+            snapshot.CreatedAt);
+
+        order.Id = OrderId.From(snapshot.OrderId);
+        order.CustomerId = CustomerId.From(snapshot.CustomerId);
+        order.ShippingAddress = snapshot.ShippingAddress;
+        order.CreatedAt = snapshot.CreatedAt;
+        order._status = snapshot.Status;
+        order.Version = snapshot.Version;
+
+        foreach (var item in snapshot.Items)
+        {
+            order._items.Add(item);
+        }
 
         return order;
     }
@@ -181,9 +242,52 @@ public sealed class Order
         _domainEvents.Clear();
     }
 
+    public void Apply(IDomainEvent domainEvent)
+    {
+        ArgumentNullException.ThrowIfNull(domainEvent);
+
+        switch (domainEvent)
+        {
+            case OrderPlacedEvent placedEvent:
+                Id = placedEvent.OrderId;
+                CustomerId = placedEvent.CustomerId;
+                ShippingAddress = placedEvent.ShippingAddress;
+                CreatedAt = placedEvent.OccurredOn;
+                _items.Clear();
+                foreach (var item in placedEvent.Items)
+                {
+                    _items.Add(item);
+                }
+
+                _status = OrderStatus.Pending;
+                Version++;
+                return;
+            case OrderConfirmedEvent confirmedEvent:
+                if (confirmedEvent.Total != Total)
+                {
+                    throw new OrderDomainException("Tổng tiền của OrderConfirmedEvent không khớp với trạng thái hiện tại của aggregate.");
+                }
+
+                _status = OrderStatus.Confirmed;
+                Version++;
+                return;
+            case OrderCancelledEvent:
+                _status = OrderStatus.Cancelled;
+                Version++;
+                return;
+            default:
+                throw new OrderDomainException($"Không hỗ trợ replay event kiểu '{domainEvent.GetType().FullName}'.");
+        }
+    }
+
     private void AddDomainEvent(IDomainEvent domainEvent)
     {
         ArgumentNullException.ThrowIfNull(domainEvent);
+
+        // Mỗi event phát sinh phải tăng version đúng 1 lần để stream event luôn phản ánh số lượng event đã xảy ra.
+        // Khi aggregate mới tạo hoặc pending/confirm/cancel gọi AddDomainEvent, số version hiện tại là số event đã phát sinh nhưng chưa được persist.
+        // Khi replay một event bằng Apply, chúng ta tăng version thêm 1 lần nữa để Version sau replay bằng chính số lượng event đã lưu trong stream.
+        Version++;
         _domainEvents.Add(domainEvent);
     }
 

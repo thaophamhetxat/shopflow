@@ -55,6 +55,7 @@ public static class DependencyInjection
 
         services.AddScoped<IOrderRepository, OrderRepository>();
         services.AddScoped<IOrderReadModelRepository, OrderRepository>();
+        services.AddScoped<IEventStore, EventStore>();
         services.AddScoped<IOrderSaga, OrderSaga>();
         services.AddScoped<ISagaStateRepository, SagaStateRepository>();
         // Day 53 cần lưu row `saga_reservations` qua repository thực tế để resume lại sau crash không ghi trùng reserve và compensation đọc đúng dữ liệu DB.
@@ -123,6 +124,7 @@ public static class DependencyInjection
         services.AddStackExchangeRedisCache(options => options.Configuration = redisConnectionString);
         services.AddScoped<IOrderRepository, OrderRepository>();
         services.AddScoped<IOrderReadModelRepository, OrderRepository>();
+        services.AddScoped<IEventStore, EventStore>();
         services.AddScoped<IOrderSaga, OrderSaga>();
         services.AddScoped<ISagaStateRepository, SagaStateRepository>();
         // Day 53 cần lưu row `saga_reservations` qua repository thực tế để resume lại sau crash không ghi trùng reserve và compensation đọc đúng dữ liệu DB.

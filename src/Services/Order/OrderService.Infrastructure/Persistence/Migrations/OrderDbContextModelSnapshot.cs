@@ -104,6 +104,10 @@ namespace OrderService.Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("status");
 
+                    b.Property<int>("Version")
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
                     b.HasKey("Id");
 
                     b.HasIndex("CreatedAt")
@@ -145,6 +149,59 @@ namespace OrderService.Infrastructure.Persistence.Migrations
                     b.HasIndex("OrderId");
 
                     b.ToTable("order_items", (string)null);
+                });
+
+            modelBuilder.Entity("OrderService.Infrastructure.Persistence.OrderEvent", b =>
+                {
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("order_id");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.Property<string>("EventData")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("event_data");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("event_type");
+
+                    b.Property<DateTime>("OccurredOn")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_on");
+
+                    b.HasKey("OrderId", "Version");
+
+                    b.ToTable("order_events", (string)null);
+                });
+
+            modelBuilder.Entity("OrderService.Infrastructure.Persistence.OrderSnapshot", b =>
+                {
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("order_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("SnapshotData")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("snapshot_data");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("OrderId");
+
+                    b.ToTable("order_snapshots", (string)null);
                 });
 
             modelBuilder.Entity("OrderService.Infrastructure.Persistence.OutboxMessage", b =>

@@ -63,7 +63,7 @@ public sealed class OutboxMessage
             AggregateId = aggregateId,
             AggregateType = aggregateType,
             EventType = domainEvent.GetType().FullName ?? domainEvent.GetType().Name,
-            EventData = JsonSerializer.Serialize(domainEvent),
+            EventData = JsonSerializer.Serialize(domainEvent, domainEvent.GetType(), OrderJsonSerializerOptions.Default),
             OccurredOn = DateTime.UtcNow,
             ProcessedAt = null
         };

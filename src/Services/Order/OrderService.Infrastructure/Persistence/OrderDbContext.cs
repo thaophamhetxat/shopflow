@@ -49,20 +49,40 @@ public sealed class OrderDbContext : DbContext
     public DbSet<SagaReservation> SagaReservations => Set<SagaReservation>();
 
     /// <summary>
-    /// Ghi sự kiện domain ra outbox trong cùng transaction với Order để đảm bảo dữ liệu không bị lệch giữa lưu đơn và lưu event.
+    /// Set lưu stream event của từng order, phục vụ event sourcing và replay aggregate từ log sự kiện.
+    /// </summary>
+    public DbSet<OrderEvent> OrderEvents => Set<OrderEvent>();
+
+    /// <summary>
+    /// Set lưu snapshot định kỳ của aggregate Order để giảm chi phí replay khi stream dài.
+    /// </summary>
+    public DbSet<OrderSnapshot> OrderSnapshots => Set<OrderSnapshot>();
+
+    /// <summary>
+    /// Ghi sự kiện domain ra outbox và event store trong cùng transaction với Order để đảm bảo dữ liệu không bị lệch giữa lưu đơn, lưu stream và publish downstream.
     /// </summary>
     /// <param name="cancellationToken">Token hủy khi `SaveChangesAsync` đang chạy.</param>
     /// <returns>Số lượng bản ghi đã được persist trong transaction này.</returns>
     public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
-        var outboxMessages = ChangeTracker.Entries<Order>()
-            .SelectMany(entry => entry.Entity.DomainEvents
-                .Select(domainEvent => OutboxMessage.Create(entry.Entity.Id.ToString(), entry.Entity.GetType().Name, domainEvent)))
-            .ToList();
+        var trackedOrders = ChangeTracker.Entries<Order>().ToList();
 
-        foreach (var outboxMessage in outboxMessages)
+        foreach (var entry in trackedOrders)
         {
-            OutboxMessages.Add(outboxMessage);
+            var newEvents = entry.Entity.DomainEvents.ToList();
+            if (newEvents.Count == 0)
+            {
+                continue;
+            }
+
+            var expectedVersion = entry.Entity.Version - newEvents.Count;
+            var eventStore = new EventStore(this);
+            await eventStore.AppendAsync(entry.Entity.Id, newEvents, expectedVersion, cancellationToken);
+
+            foreach (var domainEvent in newEvents)
+            {
+                OutboxMessages.Add(OutboxMessage.Create(entry.Entity.Id.ToString(), entry.Entity.GetType().Name, domainEvent));
+            }
         }
 
         var result = await base.SaveChangesAsync(cancellationToken);
@@ -179,6 +199,54 @@ public sealed class OrderDbContext : DbContext
                 .IsRequired();
         });
 
+        modelBuilder.Entity<OrderEvent>(eventBuilder =>
+        {
+            eventBuilder.ToTable("order_events");
+            eventBuilder.HasKey(x => new { x.OrderId, x.Version });
+
+            eventBuilder.Property(x => x.OrderId)
+                .HasColumnName("order_id")
+                .ValueGeneratedNever();
+
+            eventBuilder.Property(x => x.Version)
+                .HasColumnName("version")
+                .IsRequired();
+
+            eventBuilder.Property(x => x.EventType)
+                .HasColumnName("event_type")
+                .IsRequired();
+
+            eventBuilder.Property(x => x.EventData)
+                .HasColumnName("event_data")
+                .IsRequired();
+
+            eventBuilder.Property(x => x.OccurredOn)
+                .HasColumnName("occurred_on")
+                .IsRequired();
+        });
+
+        modelBuilder.Entity<OrderSnapshot>(snapshotBuilder =>
+        {
+            snapshotBuilder.ToTable("order_snapshots");
+            snapshotBuilder.HasKey(x => x.OrderId);
+
+            snapshotBuilder.Property(x => x.OrderId)
+                .HasColumnName("order_id")
+                .ValueGeneratedNever();
+
+            snapshotBuilder.Property(x => x.Version)
+                .HasColumnName("version")
+                .IsRequired();
+
+            snapshotBuilder.Property(x => x.SnapshotData)
+                .HasColumnName("snapshot_data")
+                .IsRequired();
+
+            snapshotBuilder.Property(x => x.CreatedAt)
+                .HasColumnName("created_at")
+                .IsRequired();
+        });
+
         EntityTypeBuilder<Order> orderBuilder = modelBuilder.Entity<Order>();
         orderBuilder.ToTable("orders");
         orderBuilder.HasKey(x => x.Id);
@@ -218,6 +286,11 @@ public sealed class OrderDbContext : DbContext
         orderBuilder.Property(x => x.CreatedAt)
             .HasField("_createdAt")
             .HasColumnName("created_at")
+            .IsRequired();
+
+        // Version của stream event phải được lưu xuống cột `version` để EF load lại aggregate theo đúng stream state và phát hiện xung đột khi dua writer append cùng lúc.
+        orderBuilder.Property(x => x.Version)
+            .HasColumnName("version")
             .IsRequired();
 
         // OrderItem là owned-entity: nó không có đời sống riêng ngoài Order, xóa Order là xóa luôn item, nên map như một collection có khóa ngoại về phía Order.
