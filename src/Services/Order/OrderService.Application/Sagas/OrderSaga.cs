@@ -88,8 +88,9 @@ public sealed class OrderSaga : IOrderSaga
                 var reserved = await _inventoryClient.ReserveAsync(item.ProductId, item.Quantity, cancellationToken);
                 if (!reserved)
                 {
-                    await _sagaStateRepository.UpsertAsync(orderId, SagaStateStatus.FailedInventory, cancellationToken);
-                    _logger.LogWarning("Saga {OrderId} dừng ở FailedInventory do reserve sản phẩm {ProductId} thất bại.", orderId, item.ProductId);
+                    var errorMessage = $"Reserve failed for product {item.ProductId}.";
+                    await _sagaStateRepository.UpsertAsync(orderId, SagaStateStatus.FailedInventory, errorMessage, cancellationToken);
+                    _logger.LogWarning("Saga {OrderId} dừng ở FailedInventory do reserve sản phẩm {ProductId} thất bại: {ErrorMessage}.", orderId, item.ProductId, errorMessage);
                     return;
                 }
             }
@@ -109,7 +110,8 @@ public sealed class OrderSaga : IOrderSaga
 
             if (chargeResult is null || !string.Equals(chargeResult.Status, "Succeeded", StringComparison.OrdinalIgnoreCase))
             {
-                await _sagaStateRepository.UpsertAsync(orderId, SagaStateStatus.FailedPayment, cancellationToken);
+                var errorMessage = $"Payment status was {chargeResult?.Status ?? "Unknown"}.";
+                await _sagaStateRepository.UpsertAsync(orderId, SagaStateStatus.FailedPayment, errorMessage, cancellationToken);
                 _logger.LogWarning("Saga {OrderId} dừng ở FailedPayment vì PaymentStatus={Status}.", orderId, chargeResult?.Status ?? "Unknown");
                 return;
             }

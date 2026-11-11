@@ -19,6 +19,16 @@ public sealed class SagaState
     public string State { get; set; } = SagaStateStatus.PendingInventory.ToString();
 
     /// <summary>
+    /// Lý do saga dừng ở trạng thái failed, null khi mọi bước đều thành công; giúp trace chính xác nghiệp vụ thất bại sau restart.
+    /// </summary>
+    public string? ErrorMessage { get; set; }
+
+    /// <summary>
+    /// Thời điểm saga lần đầu được ghi nhận; `created_at` giữ nguyên để biết row checkpoint được tạo khi nào, ngay cả khi status được cập nhật nhiều lần.
+    /// </summary>
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>
     /// Thời điểm cập nhật cuối cùng của trạng thái này để dễ trace và audit.
     /// </summary>
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
@@ -28,14 +38,18 @@ public sealed class SagaState
     /// </summary>
     /// <param name="orderId">OrderId cần khởi tạo checkpoint.</param>
     /// <param name="status">Trạng thái đầu tiên của saga.</param>
-    /// <returns>Đối tượng SagaState đã chuẩn hóa UpdatedAt.</returns>
-    public static SagaState Create(Guid orderId, SagaStateStatus status)
+    /// <param name="errorMessage">Lý do lỗi nếu row được tạo ở trạng thái failed; nullable cho trạng thái thành công.</param>
+    /// <returns>Đối tượng SagaState đã chuẩn hóa `created_at` và `updated_at`.</returns>
+    public static SagaState Create(Guid orderId, SagaStateStatus status, string? errorMessage = null)
     {
+        var now = DateTime.UtcNow;
         return new SagaState
         {
             OrderId = orderId,
             State = status.ToString(),
-            UpdatedAt = DateTime.UtcNow
+            ErrorMessage = errorMessage,
+            CreatedAt = now,
+            UpdatedAt = now
         };
     }
 
@@ -43,9 +57,11 @@ public sealed class SagaState
     /// Cập nhật trạng thái hiện tại của saga và thời điểm sửa mới nhất.
     /// </summary>
     /// <param name="status">Trạng thái mới cần lưu.</param>
-    public void UpdateState(SagaStateStatus status)
+    /// <param name="errorMessage">Lý do lỗi mới nếu trạng thái là failed, null khi không có lỗi.</param>
+    public void UpdateState(SagaStateStatus status, string? errorMessage = null)
     {
         State = status.ToString();
+        ErrorMessage = errorMessage;
         UpdatedAt = DateTime.UtcNow;
     }
 }

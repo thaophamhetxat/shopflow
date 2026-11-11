@@ -105,8 +105,8 @@ public static class DependencyInjection
         services.RemoveAll<IInventoryClient>();
         services.RemoveAll<IPaymentClient>();
 
-        var inventoryBaseUrl = configuration["Services:Inventory:BaseUrl"] ?? "http://localhost:5140";
-        var paymentBaseUrl = configuration["Services:Payment:BaseUrl"] ?? "http://localhost:5199";
+        var inventoryBaseUrl = configuration["Saga:InventoryBaseUrl"] ?? "http://localhost:5140";
+        var paymentBaseUrl = configuration["Saga:PaymentBaseUrl"] ?? "http://localhost:5199";
 
         services.AddStackExchangeRedisCache(options => options.Configuration = redisConnectionString);
         services.AddScoped<IOrderRepository, OrderRepository>();
@@ -117,12 +117,10 @@ public static class DependencyInjection
         services.AddHttpClient("InventoryService", client =>
         {
             client.BaseAddress = new Uri(inventoryBaseUrl);
-            client.Timeout = TimeSpan.FromSeconds(10);
         });
         services.AddHttpClient("PaymentService", client =>
         {
             client.BaseAddress = new Uri(paymentBaseUrl);
-            client.Timeout = TimeSpan.FromSeconds(10);
         });
         services.AddScoped<IIdempotencyStore, RedisIdempotencyStore>();
         services.AddHostedService<OutboxProcessor>();

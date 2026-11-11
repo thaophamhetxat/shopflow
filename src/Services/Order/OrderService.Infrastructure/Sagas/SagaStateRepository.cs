@@ -61,6 +61,11 @@ public sealed class SagaStateRepository : ISagaStateRepository
         else
         {
             existing.State = state.State;
+            existing.ErrorMessage = state.ErrorMessage;
+            if (existing.CreatedAt == default)
+            {
+                existing.CreatedAt = state.CreatedAt;
+            }
             existing.UpdatedAt = state.UpdatedAt;
         }
 
@@ -70,18 +75,18 @@ public sealed class SagaStateRepository : ISagaStateRepository
     /// <summary>
     /// Cập nhật nhanh trạng thái theo `orderId` mà không cần tạo entity từ ngoài.
     /// </summary>
-    public async Task UpsertAsync(Guid orderId, SagaStateStatus status, CancellationToken cancellationToken = default)
+    public async Task UpsertAsync(Guid orderId, SagaStateStatus status, string? errorMessage = null, CancellationToken cancellationToken = default)
     {
         var existing = await _dbContext.SagaStates
             .FirstOrDefaultAsync(entry => entry.OrderId == orderId, cancellationToken);
 
         if (existing is null)
         {
-            _dbContext.SagaStates.Add(SagaState.Create(orderId, status));
+            _dbContext.SagaStates.Add(SagaState.Create(orderId, status, errorMessage));
         }
         else
         {
-            existing.UpdateState(status);
+            existing.UpdateState(status, errorMessage);
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);

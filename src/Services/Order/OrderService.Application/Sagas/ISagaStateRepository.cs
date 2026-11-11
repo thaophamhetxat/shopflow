@@ -27,7 +27,7 @@ public interface ISagaStateRepository
     Task SaveAsync(SagaState state, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Cập nhật nhanh trạng thái cho orderId này mà không cần đọc entity nữa.
+    /// Cập nhật nhanh trạng thái cho orderId này mà không cần đọc entity nữa, kèm lý do lỗi nếu saga dừng ở trạng thái fail.
     /// </summary>
-    Task UpsertAsync(Guid orderId, SagaStateStatus status, CancellationToken cancellationToken = default);
+    Task UpsertAsync(Guid orderId, SagaStateStatus status, string? errorMessage = null, CancellationToken cancellationToken = default);
 }
