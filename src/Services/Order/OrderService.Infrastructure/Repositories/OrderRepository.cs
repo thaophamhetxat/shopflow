@@ -62,38 +62,29 @@ public sealed class OrderRepository : IOrderRepository
     /// <param name="id">OrderId cần tìm.</param>
     /// <param name="cancellationToken">Token hủy nếu request bị hủy.</param>
     /// <returns>OrderDetailDto nếu order tồn tại, otherwise null.</returns>
-    public async Task<object?> GetOrderDetailAsync(OrderId id, CancellationToken cancellationToken = default)
+    public async Task<OrderDetailDto?> GetOrderDetailAsync(OrderId id, CancellationToken cancellationToken = default)
     {
-        var order = await _dbContext.Orders
+        return await _dbContext.Orders
             .AsNoTracking()
-            .Include(currentOrder => currentOrder.Items)
-            .SingleOrDefaultAsync(currentOrder => currentOrder.Id == id, cancellationToken);
-
-        if (order is null)
-        {
-            return null;
-        }
-
-        var itemDtos = order.Items
-            .Select(item => new OrderDetailItemDto(
-                item.ProductId,
-                item.Quantity,
-                item.UnitPrice.Amount,
-                item.UnitPrice.Currency,
-                item.LineTotal.Amount))
-            .ToList();
-
-        var totalAmount = itemDtos.Sum(item => item.LineTotalAmount);
-        var totalCurrency = itemDtos.FirstOrDefault()?.UnitPriceCurrency ?? string.Empty;
-
-        return new OrderDetailDto(
-            order.Id.Value,
-            order.CustomerId.Value,
-            order.Status.ToString(),
-            totalAmount,
-            totalCurrency,
-            order.CreatedAt,
-            itemDtos);
+            .Where(currentOrder => currentOrder.Id == id)
+            .Select(currentOrder => new OrderDetailDto(
+                currentOrder.Id.Value,
+                currentOrder.CustomerId.Value,
+                currentOrder.Status.ToString(),
+                currentOrder.Items.Sum(item => item.LineTotal.Amount),
+                currentOrder.Items
+                    .Select(item => item.UnitPrice.Currency)
+                    .FirstOrDefault() ?? string.Empty,
+                currentOrder.CreatedAt,
+                currentOrder.Items
+                    .Select(item => new OrderDetailItemDto(
+                        item.ProductId,
+                        item.Quantity,
+                        item.UnitPrice.Amount,
+                        item.UnitPrice.Currency,
+                        item.LineTotal.Amount))
+                    .ToList()))
+            .FirstOrDefaultAsync(cancellationToken);
     }
 
     /// <summary>
@@ -104,70 +95,62 @@ public sealed class OrderRepository : IOrderRepository
     /// <param name="pageSize">Kích thước trang tối đa, được clamp ở handler và trong method này để giữ an toàn.</param>
     /// <param name="cancellationToken">Token hủy nếu request bị hủy.</param>
     /// <returns>Danh sách OrderSummaryDto theo thứ tự CreatedAt giảm dần, OrderId giảm dần, tối đa pageSize item.</returns>
-    public async Task<IReadOnlyList<object>> ListOrderSummariesByCustomerAsync(CustomerId customerId, OrderId? cursor, int pageSize, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<OrderSummaryDto>> ListOrderSummariesByCustomerAsync(CustomerId customerId, OrderId? cursor, int pageSize, CancellationToken cancellationToken = default)
     {
         var boundedPageSize = Math.Clamp(pageSize, 1, 50);
 
-        IQueryable<Order> query = _dbContext.Orders
-            .AsNoTracking()
-            .Where(currentOrder => currentOrder.CustomerId == customerId)
-            .OrderByDescending(currentOrder => currentOrder.CreatedAt)
-            .ThenByDescending(currentOrder => currentOrder.Id);
-
-        DateTime? cursorCreatedAt = null;
-        OrderId? cursorOrderIdForFiltering = null;
-        if (cursor is OrderId cursorOrderId)
+        if (cursor is not OrderId cursorOrderId)
         {
-            cursorOrderIdForFiltering = cursorOrderId;
-
-            // Keyset thay cho OFFSET: cursor là OrderId của đơn cuối trang trước, trang sau chỉ lấy đơn "nhỏ hơn" cursor theo thứ tự sắp xếp, không trùng đơn trước đó.
-            // Cách này tránh lệch dữ liệu khi có đơn mới được insert vào khoảng giữa các trang và không cần dùng Skip/Take kiểu OFFSET.
-            cursorCreatedAt = await _dbContext.Orders
+            return await _dbContext.Orders
                 .AsNoTracking()
-                .Where(currentOrder => currentOrder.Id == cursorOrderId)
-                .Select(currentOrder => currentOrder.CreatedAt)
-                .SingleOrDefaultAsync(cancellationToken);
-        }
-
-        var orders = await query
-            .Include(currentOrder => currentOrder.Items)
-            .ToListAsync(cancellationToken);
-
-        if (cursorOrderIdForFiltering is OrderId effectiveCursorOrderId && cursorCreatedAt.HasValue)
-        {
-            orders = orders
-                .Where(currentOrder =>
-                    currentOrder.CreatedAt < cursorCreatedAt.Value ||
-                    (currentOrder.CreatedAt == cursorCreatedAt.Value && currentOrder.Id.Value < effectiveCursorOrderId.Value))
-                .ToList();
-        }
-
-        var orderSummaries = orders
-            .Take(boundedPageSize)
-            .ToList();
-
-        if (orderSummaries.Count == 0)
-        {
-            return Array.Empty<object>();
-        }
-
-        return orderSummaries
-            .Select(currentOrder =>
-            {
-                var itemCount = currentOrder.Items.Count;
-                var totalAmount = currentOrder.Items.Sum(item => item.LineTotal.Amount);
-                var totalCurrency = currentOrder.Items.FirstOrDefault()?.UnitPrice.Currency ?? string.Empty;
-
-                return (object)new OrderSummaryDto(
+                .Where(currentOrder => currentOrder.CustomerId == customerId)
+                .OrderByDescending(currentOrder => currentOrder.CreatedAt)
+                .ThenByDescending(currentOrder => currentOrder.Id)
+                .Select(currentOrder => new OrderSummaryDto(
                     currentOrder.Id.Value,
                     currentOrder.CustomerId.Value,
                     currentOrder.Status.ToString(),
-                    totalAmount,
-                    totalCurrency,
-                    itemCount,
-                    currentOrder.CreatedAt);
-            })
-            .ToList();
+                    currentOrder.Items.Sum(item => item.LineTotal.Amount),
+                    currentOrder.Items
+                        .Select(item => item.UnitPrice.Currency)
+                        .FirstOrDefault() ?? string.Empty,
+                    currentOrder.Items.Count(),
+                    currentOrder.CreatedAt))
+                .Take(boundedPageSize)
+                .ToListAsync(cancellationToken);
+        }
+
+        var cursorCreatedAt = await _dbContext.Orders
+            .AsNoTracking()
+            .Where(currentOrder => currentOrder.Id == cursorOrderId)
+            .Select(currentOrder => currentOrder.CreatedAt)
+            .SingleOrDefaultAsync(cancellationToken);
+
+        if (cursorCreatedAt == default && !await _dbContext.Orders.AsNoTracking().AnyAsync(currentOrder => currentOrder.Id == cursorOrderId, cancellationToken))
+        {
+            return Array.Empty<OrderSummaryDto>();
+        }
+
+        return await _dbContext.Orders
+            .AsNoTracking()
+            .Where(currentOrder => currentOrder.CustomerId == customerId)
+            .Where(currentOrder =>
+                currentOrder.CreatedAt < cursorCreatedAt ||
+                (currentOrder.CreatedAt == cursorCreatedAt && currentOrder.Id.Value < cursorOrderId.Value))
+            .OrderByDescending(currentOrder => currentOrder.CreatedAt)
+            .ThenByDescending(currentOrder => currentOrder.Id)
+            .Select(currentOrder => new OrderSummaryDto(
+                currentOrder.Id.Value,
+                currentOrder.CustomerId.Value,
+                currentOrder.Status.ToString(),
+                currentOrder.Items.Sum(item => item.LineTotal.Amount),
+                currentOrder.Items
+                    .Select(item => item.UnitPrice.Currency)
+                    .FirstOrDefault() ?? string.Empty,
+                currentOrder.Items.Count(),
+                currentOrder.CreatedAt))
+            .Take(boundedPageSize)
+            .ToListAsync(cancellationToken);
     }
 
     /// <summary>

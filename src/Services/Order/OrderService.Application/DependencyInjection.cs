@@ -70,15 +70,15 @@ public static class DependencyInjection
             return Task.FromResult(_orders.TryGetValue(id, out var order) ? order : null);
         }
 
-        public Task<object?> GetOrderDetailAsync(OrderId id, CancellationToken cancellationToken = default)
+        public Task<OrderDetailDto?> GetOrderDetailAsync(OrderId id, CancellationToken cancellationToken = default)
         {
             var order = _orders.TryGetValue(id, out var foundOrder) ? foundOrder : null;
             if (order is null)
             {
-                return Task.FromResult<object?>(null);
+                return Task.FromResult<OrderDetailDto?>(null);
             }
 
-            return Task.FromResult<object?>(new OrderDetailDto(
+            return Task.FromResult<OrderDetailDto?>(new OrderDetailDto(
                 order.Id.Value,
                 order.CustomerId.Value,
                 order.Status.ToString(),
@@ -93,7 +93,7 @@ public static class DependencyInjection
                     item.LineTotal.Amount)).ToList()));
         }
 
-        public Task<IReadOnlyList<object>> ListOrderSummariesByCustomerAsync(CustomerId customerId, OrderId? cursor, int pageSize, CancellationToken cancellationToken = default)
+        public Task<IReadOnlyList<OrderSummaryDto>> ListOrderSummariesByCustomerAsync(CustomerId customerId, OrderId? cursor, int pageSize, CancellationToken cancellationToken = default)
         {
             var items = _orders.Values
                 .Where(order => order.CustomerId == customerId)
@@ -115,7 +115,7 @@ public static class DependencyInjection
 
             var summaries = items
                 .Take(Math.Clamp(pageSize, 1, 50))
-                .Select(order => (object)new OrderSummaryDto(
+                .Select(order => new OrderSummaryDto(
                     order.Id.Value,
                     order.CustomerId.Value,
                     order.Status.ToString(),
@@ -125,7 +125,7 @@ public static class DependencyInjection
                     order.CreatedAt))
                 .ToList();
 
-            return Task.FromResult<IReadOnlyList<object>>(summaries);
+            return Task.FromResult<IReadOnlyList<OrderSummaryDto>>(summaries);
         }
 
         public Task SaveChangesAsync(CancellationToken cancellationToken = default)

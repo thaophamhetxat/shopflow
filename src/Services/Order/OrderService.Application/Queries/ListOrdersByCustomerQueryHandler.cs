@@ -35,7 +35,6 @@ public sealed class ListOrdersByCustomerQueryHandler : IRequestHandler<ListOrder
         var customerId = CustomerId.From(request.CustomerId);
         OrderId? cursor = request.CursorOrderId is Guid cursorOrderId ? OrderId.From(cursorOrderId) : null;
 
-        var result = await _orderRepository.ListOrderSummariesByCustomerAsync(customerId, cursor, boundedPageSize, cancellationToken);
-        return result.Cast<OrderSummaryDto>().ToList();
+        return await _orderRepository.ListOrderSummariesByCustomerAsync(customerId, cursor, boundedPageSize, cancellationToken);
     }
 }

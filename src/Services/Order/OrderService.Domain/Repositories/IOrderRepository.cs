@@ -2,6 +2,7 @@
 // Tạo ở Day 42 để định nghĩa hành vi lưu trữ cần thiết và giữ Clean Architecture, tức Domain chỉ nói "muốn lưu gì" còn Infrastructure quyết định "lưu bằng gì".
 // Day 46 bổ sung 2 method đọc projection để Application đọc read model tùy theo query thay vì tải cả aggregate Order về.
 
+using OrderService.Application.Queries;
 using OrderService.Domain.Aggregates;
 using OrderService.Domain.ValueObjects;
 
@@ -35,8 +36,8 @@ public interface IOrderRepository
     /// </summary>
     /// <param name="id">OrderId của đơn cần đọc chi tiết.</param>
     /// <param name="cancellationToken">Token hủy thao tác nếu request bị hủy.</param>
-    /// <returns>Object DTO đã được project từ SQL nếu tồn tại, ngược lại null.</returns>
-    Task<object?> GetOrderDetailAsync(OrderId id, CancellationToken cancellationToken = default);
+    /// <returns>OrderDetailDto đã được project từ SQL nếu tồn tại, ngược lại null.</returns>
+    Task<OrderDetailDto?> GetOrderDetailAsync(OrderId id, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Đọc danh sách summary theo khách hàng bằng keyset cursor, trả về tối đa pageSize item và không dùng OFFSET.
@@ -45,8 +46,8 @@ public interface IOrderRepository
     /// <param name="cursor">OrderId của đơn cuối trang trước để dùng làm cursor keyset, null nghĩa trang đầu.</param>
     /// <param name="pageSize">Số lượng item tối đa trên một trang, thường là 20 và clamp về 50 ở handler.</param>
     /// <param name="cancellationToken">Token hủy thao tác nếu request bị hủy.</param>
-    /// <returns>Danh sách summary dưới dạng object để tránh phụ thuộc chéo với Application layer.</returns>
-    Task<IReadOnlyList<object>> ListOrderSummariesByCustomerAsync(CustomerId customerId, OrderId? cursor, int pageSize, CancellationToken cancellationToken = default);
+    /// <returns>Danh sách summary dưới dạng OrderSummaryDto.</returns>
+    Task<IReadOnlyList<OrderSummaryDto>> ListOrderSummariesByCustomerAsync(CustomerId customerId, OrderId? cursor, int pageSize, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Ghi tất cả thay đổi đang được theo dõi vào database PostgreSQL.

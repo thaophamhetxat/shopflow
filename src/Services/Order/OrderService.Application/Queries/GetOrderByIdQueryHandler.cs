@@ -36,6 +36,6 @@ public sealed class GetOrderByIdQueryHandler : IRequestHandler<GetOrderByIdQuery
         var orderId = OrderId.From(request.OrderId);
 
         // Projection bằng Select: lấy đúng dữ liệu cần cho DTO, không còn Include hoặc map từ aggregate vào memory để tránh tải cả Order + item cùng lúc.
-        return await _orderRepository.GetOrderDetailAsync(orderId, cancellationToken) as OrderDetailDto;
+        return await _orderRepository.GetOrderDetailAsync(orderId, cancellationToken);
     }
 }
