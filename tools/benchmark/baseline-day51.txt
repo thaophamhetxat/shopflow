@@ -1,0 +1,17 @@
+﻿ShopFlow Day 51 - Kết quả đo Order API
+Thời điểm ghi báo cáo: 2026-11-11 13:46:00 +07:00
+Máy: DESKTOP-C54PUKV
+Hệ điều hành: Microsoft Windows NT 10.0.26300.0
+PowerShell: 5.1.26100.9818
+Docker: 29.9.3 / 29.9.3
+BaseUrl: http://localhost:5181
+Cách đo: 100 request tuần tự mỗi endpoint; latency chỉ tính status mong đợi; p50/p99 dùng nearest-rank.
+
+
+Endpoint                                      Requests Success AvgMs P50Ms P99Ms MaxMs Errors ErrorStatuses
+--------                                      -------- ------- ----- ----- ----- ----- ------ -------------
+POST /api/v1/orders                                100     100 14.85 14.50 20.60 20.64      0              
+GET /api/v1/orders/{id}                            100     100 6.65  6.53  8.64  8.86       0              
+GET /api/v1/orders?customerId=...&pageSize=20      100     100 6.29  5.95  8.35  21.17      0              
+DELETE /api/v1/orders/{id}                         100     100 19.07 18.89 23.09 24.82      0              
+GET /api/v2/orders/{id}                            100     100 7.77  7.56  11.01 12.10      0
