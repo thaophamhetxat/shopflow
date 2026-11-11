@@ -1,20 +1,33 @@
-// File này tạo API minimal cho OrderService để project build được ở Day 38.
-// Đây là khung API đầu tiên trong solution này, chịu trách nhiệm chỉ trả /health và không chứa nghiệp vụ.
-// Layer API này dự kiến sẽ nhận request phục vụ luồng Place/Confirm/Cancel/Fulfill ở Day 47 trở đi.
-// Mục tiêu ở Day 38 là đảm bảo service khởi động và đáp ứng sự sống khỏe cho kiểm tra thủ công.
-using Microsoft.AspNetCore.Builder;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
+// File này chứa entry point của OrderService.API, nơi đăng ký dependency và cấu hình Swagger, endpoint v1/v2 và health probe.
+// Tạo ở Day 47 để API có thể nhận request thật cho Order, đồng thời mở danh mục OpenAPI để demo versioning và tương thích v1-v2.
+// Gateway Day 49 sẽ proxy qua các route này, nên API hiện tại phải là contract rõ ràng và có Problem Details chuẩn RFC 9457.
+using Microsoft.OpenApi.Models;
+using OrderService.API.Endpoints;
+using OrderService.Application;
 using OrderService.Infrastructure;
 
-// Tạo builder: nơi đăng ký dependency injection trước khi app khởi chạy.
 var builder = WebApplication.CreateBuilder(args);
-// Đăng ký health check: dùng để /health báo service còn sống và sẵn sàng nhận request.
-builder.Services.AddHealthChecks();
+
+builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
-// Build app từ builder: sau bước này không đăng ký service mới được nữa.
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new OpenApiInfo { Title = "ShopFlow Order API v1", Version = "v1" });
+    options.SwaggerDoc("v2", new OpenApiInfo { Title = "ShopFlow Order API v2", Version = "v2" });
+});
+
 var app = builder.Build();
-// Map endpoint GET /health: trả OK để kiểm tra service còn sống và gắn probe cho sau này.
+
+app.UseSwagger();
+app.UseSwaggerUI(options =>
+{
+    options.SwaggerEndpoint("/swagger/v1/swagger.json", "ShopFlow Order API v1");
+    options.SwaggerEndpoint("/swagger/v2/swagger.json", "ShopFlow Order API v2");
+});
+
 app.MapHealthChecks("/health");
-// Chạy app: lắng nghe request trên port được cấu hình trong ASP.NET Core.
+app.MapOrderEndpoints();
+app.MapGet("/health/live", () => Results.Ok(new { status = "Live" }));
+
 app.Run();
