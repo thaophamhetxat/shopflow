@@ -31,3 +31,4 @@ app.MapOrderEndpoints();
 app.MapGet("/health/live", () => Results.Ok(new { status = "Live" }));
 
 app.Run();
+public partial class Program { }
