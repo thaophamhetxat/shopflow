@@ -39,4 +39,21 @@ public sealed class InventoryHttpClient : IInventoryClient
 
         return response.IsSuccessStatusCode;
     }
+
+    /// <summary>
+    /// Release kho đã reserve trước đó nếu saga cần bù trừ khi Reserve/Charge fail hoặc timeout.
+    /// </summary>
+    /// <param name="productId">ProductId cần trả kho.</param>
+    /// <param name="quantity">Số lượng sẽ trả lại.</param>
+    /// <param name="cancellationToken">Token hủy request.</param>
+    /// <returns>True khi Inventory xác nhận release là thành công.</returns>
+    public async Task<bool> ReleaseAsync(Guid productId, int quantity, CancellationToken cancellationToken = default)
+    {
+        using var response = await _httpClient.PostAsJsonAsync(
+            "/inventory/release",
+            new { productId, quantity },
+            cancellationToken);
+
+        return response.IsSuccessStatusCode;
+    }
 }

@@ -16,4 +16,13 @@ public interface IInventoryClient
     /// <param name="cancellationToken">Token hủy khi request bị ngắt.</param>
     /// <returns>True khi reserve thành công, false khi Inventory từ chối hoặc trả lỗi.</returns>
     Task<bool> ReserveAsync(Guid productId, int quantity, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gọi Inventory API release kho đã reserve trước đó để bù trừ khi saga fail hoặc timeout.
+    /// </summary>
+    /// <param name="productId">ProductId cần release kho.</param>
+    /// <param name="quantity">Số lượng release tương ứng với reservation.</param>
+    /// <param name="cancellationToken">Token hủy khi request bị ngắt.</param>
+    /// <returns>True khi Inventory xác nhận release thành công, false khi không thể release hoặc response báo lỗi.</returns>
+    Task<bool> ReleaseAsync(Guid productId, int quantity, CancellationToken cancellationToken = default);
 }

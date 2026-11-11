@@ -44,6 +44,11 @@ public sealed class OrderDbContext : DbContext
     public DbSet<SagaState> SagaStates => Set<SagaState>();
 
     /// <summary>
+    /// Set lưu từng item đã reserve thành công trong order để cleanup idempotent và skip double-reserve nếu saga crash giữa chừng.
+    /// </summary>
+    public DbSet<SagaReservation> SagaReservations => Set<SagaReservation>();
+
+    /// <summary>
     /// Ghi sự kiện domain ra outbox trong cùng transaction với Order để đảm bảo dữ liệu không bị lệch giữa lưu đơn và lưu event.
     /// </summary>
     /// <param name="cancellationToken">Token hủy khi `SaveChangesAsync` đang chạy.</param>
@@ -128,7 +133,48 @@ public sealed class OrderDbContext : DbContext
                 .HasColumnName("state")
                 .IsRequired();
 
+            sagaBuilder.Property(x => x.ErrorMessage)
+                .HasColumnName("error_message")
+                .IsRequired(false);
+
+            sagaBuilder.Property(x => x.CreatedAt)
+                .HasColumnName("created_at")
+                .IsRequired();
+
             sagaBuilder.Property(x => x.UpdatedAt)
+                .HasColumnName("updated_at")
+                .IsRequired();
+        });
+
+        modelBuilder.Entity<SagaReservation>(reservationBuilder =>
+        {
+            reservationBuilder.ToTable("saga_reservations");
+            reservationBuilder.HasKey(x => new { x.OrderId, x.ProductId });
+
+            reservationBuilder.Property(x => x.OrderId)
+                .HasColumnName("order_id")
+                .ValueGeneratedNever();
+
+            reservationBuilder.Property(x => x.ProductId)
+                .HasColumnName("product_id")
+                .ValueGeneratedNever();
+
+            reservationBuilder.Property(x => x.Quantity)
+                .HasColumnName("quantity")
+                .IsRequired();
+
+            reservationBuilder.Property(x => x.Status)
+                .HasColumnName("status")
+                .IsRequired()
+                .HasConversion(
+                    status => (int)status,
+                    value => (SagaReservationStatus)value);
+
+            reservationBuilder.Property(x => x.CreatedAt)
+                .HasColumnName("created_at")
+                .IsRequired();
+
+            reservationBuilder.Property(x => x.UpdatedAt)
                 .HasColumnName("updated_at")
                 .IsRequired();
         });

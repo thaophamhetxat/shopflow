@@ -17,84 +17,233 @@ namespace OrderService.IntegrationTests;
 /// <summary>
 /// Test end-to-end cho `OrderSaga` chạy qua outbox poll, lưu `saga_state` và cập nhật đơn từ Pending sang Confirmed.
 /// </summary>
-public sealed class OrderSagaIntegrationTests : IClassFixture<ShopFlowWebApplicationFactory>
+public sealed class OrderSagaIntegrationTests
 {
-    private readonly ShopFlowWebApplicationFactory _factory;
-
-    /// <summary>
-    /// Khởi tạo factory test với PostgreSQL Testcontainers để có môi trường Order API thật cho saga integration.
-    /// </summary>
-    public OrderSagaIntegrationTests(ShopFlowWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
-
     // Test này chứng minh Evidence Day 52: đặt đơn qua HTTP, outbox poll kích hoạt saga, rồi order chuyển `Confirmed` và `saga_state` ghi `Completed`.
     [Fact]
     public async Task PlaceOrder_EndToEnd_SagaConfirmsOrderAndPersistsCompletedState()
     {
-        var factory = _factory.WithWebHostBuilder(builder =>
+        var factory = new ShopFlowWebApplicationFactory();
+        await factory.InitializeAsync();
+
+        try
         {
-            builder.ConfigureTestServices(services =>
+            var hostFactory = factory.WithWebHostBuilder(builder =>
             {
-                // Thay hai client saga bằng fake trả thành công để test không phụ thuộc vào Inventory/Payment service đang chạy thật bên ngoài.
-                services.RemoveAll<IInventoryClient>();
-                services.RemoveAll<IPaymentClient>();
-                services.AddScoped<IInventoryClient, FakeInventoryClient>();
-                services.AddScoped<IPaymentClient, FakePaymentClient>();
-            });
-        });
-
-        using var client = factory.CreateClient();
-        var customerId = Guid.NewGuid();
-        var ironSwordId = Guid.Parse("a73b5e21-4c0f-4f91-8a61-2e5c9501d101");
-        var request = new PlaceOrderRequest(
-            customerId,
-            "123 Lê Lợi",
-            "Hà Nội",
-            "Việt Nam",
-            "100000",
-            [
-                new PlaceOrderRequestItem(ironSwordId, 1, 250000m, "VND")
-            ]);
-
-        using var createResponse = await client.PostAsJsonAsync("/api/v1/orders", request);
-        Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
-
-        using var orderDocument = JsonDocument.Parse(await createResponse.Content.ReadAsStringAsync());
-        var orderId = orderDocument.RootElement.GetProperty("orderId").GetGuid();
-
-        var confirmed = false;
-        for (var attempt = 0; attempt < 30; attempt++)
-        {
-            using var getResponse = await client.GetAsync($"/api/v1/orders/{orderId}");
-            if (getResponse.StatusCode == HttpStatusCode.OK)
-            {
-                using var detailDocument = JsonDocument.Parse(await getResponse.Content.ReadAsStringAsync());
-                var status = detailDocument.RootElement.GetProperty("status").GetString();
-                if (string.Equals(status, "Confirmed", StringComparison.Ordinal))
+                builder.ConfigureTestServices(services =>
                 {
-                    confirmed = true;
-                    break;
+                    services.RemoveAll<IInventoryClient>();
+                    services.RemoveAll<IPaymentClient>();
+                    services.AddScoped<IInventoryClient>(_ => new FakeInventoryClient());
+                    services.AddScoped<IPaymentClient, FakePaymentClient>();
+                });
+            });
+
+            using var client = hostFactory.CreateClient();
+            var customerId = Guid.NewGuid();
+            var ironSwordId = Guid.Parse("a73b5e21-4c0f-4f91-8a61-2e5c9501d101");
+            var request = new PlaceOrderRequest(
+                customerId,
+                "123 Lê Lợi",
+                "Hà Nội",
+                "Việt Nam",
+                "100000",
+                [
+                    new PlaceOrderRequestItem(ironSwordId, 1, 250000m, "VND")
+                ]);
+
+            using var createResponse = await client.PostAsJsonAsync("/api/v1/orders", request);
+            Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
+
+            using var orderDocument = JsonDocument.Parse(await createResponse.Content.ReadAsStringAsync());
+            var orderId = orderDocument.RootElement.GetProperty("orderId").GetGuid();
+
+            var confirmed = false;
+            for (var attempt = 0; attempt < 60; attempt++)
+            {
+                using var getResponse = await client.GetAsync($"/api/v1/orders/{orderId}");
+                if (getResponse.StatusCode == HttpStatusCode.OK)
+                {
+                    using var detailDocument = JsonDocument.Parse(await getResponse.Content.ReadAsStringAsync());
+                    var status = detailDocument.RootElement.GetProperty("status").GetString();
+                    if (string.Equals(status, "Confirmed", StringComparison.Ordinal))
+                    {
+                        confirmed = true;
+                        break;
+                    }
                 }
+
+                await Task.Delay(500);
             }
 
-            await Task.Delay(500);
+            Assert.True(confirmed, "Saga không kịp chuyển order sang Confirmed trong khoảng thời gian 15s cho phép.");
+
+            await using var scope = hostFactory.Services.CreateAsyncScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+            var sagaState = await dbContext.SagaStates.FirstOrDefaultAsync(state => state.OrderId == orderId);
+
+            Assert.NotNull(sagaState);
+            Assert.Equal("Completed", sagaState.State);
         }
+        finally
+        {
+            await ((IAsyncLifetime)factory).DisposeAsync();
+        }
+    }
 
-        Assert.True(confirmed, "Saga không kịp chuyển order sang Confirmed trong khoảng thời gian 15s cho phép.");
+    // Test này chứng minh Evidence Day 53: payment fail phải release item đã reserve và order chuyển Cancelled + FailedPayment.
+    [Fact]
+    public async Task PlaceOrder_PaymentFails_InventoryReleased()
+    {
+        var factory = new ShopFlowWebApplicationFactory();
+        await factory.InitializeAsync();
 
-        await using var scope = factory.Services.CreateAsyncScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
-        var sagaState = await dbContext.SagaStates.FirstOrDefaultAsync(state => state.OrderId == orderId);
+        try
+        {
+            var hostFactory = factory.WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureTestServices(services =>
+                {
+                    services.RemoveAll<IInventoryClient>();
+                    services.RemoveAll<IPaymentClient>();
+                    services.AddScoped<IInventoryClient>(_ => new FakeInventoryClient());
+                    services.AddScoped<IPaymentClient>(_ => new FakePaymentClient("Failed"));
+                });
+            });
 
-        Assert.NotNull(sagaState);
-        Assert.Equal("Completed", sagaState.State);
+            using var client = hostFactory.CreateClient();
+            var request = new PlaceOrderRequest(
+                Guid.NewGuid(),
+                "123 Lê Lợi",
+                "Hà Nội",
+                "Việt Nam",
+                "100000",
+                [
+                    new PlaceOrderRequestItem(Guid.Parse("a73b5e21-4c0f-4f91-8a61-2e5c9501d101"), 1, 250000m, "VND")
+                ]);
+
+            using var createResponse = await client.PostAsJsonAsync("/api/v1/orders", request);
+            Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
+
+            using var orderDocument = JsonDocument.Parse(await createResponse.Content.ReadAsStringAsync());
+            var orderId = orderDocument.RootElement.GetProperty("orderId").GetGuid();
+
+            var cancelled = false;
+            for (var attempt = 0; attempt < 60; attempt++)
+            {
+                using var getResponse = await client.GetAsync($"/api/v1/orders/{orderId}");
+                if (getResponse.StatusCode == HttpStatusCode.OK)
+                {
+                    using var detailDocument = JsonDocument.Parse(await getResponse.Content.ReadAsStringAsync());
+                    var status = detailDocument.RootElement.GetProperty("status").GetString();
+                    if (string.Equals(status, "Cancelled", StringComparison.Ordinal))
+                    {
+                        cancelled = true;
+                        break;
+                    }
+                }
+
+                await Task.Delay(500);
+            }
+
+            Assert.True(cancelled, "Order không chuyển sang Cancelled sau khi payment fail.");
+
+            await using var scope = hostFactory.Services.CreateAsyncScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+            var sagaState = await dbContext.SagaStates.FirstOrDefaultAsync(state => state.OrderId == orderId);
+            var reservation = await dbContext.SagaReservations.FirstOrDefaultAsync(r => r.OrderId == orderId);
+
+            Assert.NotNull(sagaState);
+            Assert.Equal("FailedPayment", sagaState.State);
+            Assert.NotNull(reservation);
+            Assert.Equal(SagaReservationStatus.Released, reservation.Status);
+        }
+        finally
+        {
+            await ((IAsyncLifetime)factory).DisposeAsync();
+        }
+    }
+
+    // Test này chứng minh Evidence Day 53: reserve fail phải cancel order và không gọi payment.
+    [Fact]
+    public async Task PlaceOrder_ReserveFails_OrderCancelled()
+    {
+        var factory = new ShopFlowWebApplicationFactory();
+        await factory.InitializeAsync();
+
+        try
+        {
+            var hostFactory = factory.WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureTestServices(services =>
+                {
+                    services.RemoveAll<IInventoryClient>();
+                    services.RemoveAll<IPaymentClient>();
+                    services.AddScoped<IInventoryClient>(_ => new FakeInventoryClient { FailReserve = true });
+                    services.AddScoped<IPaymentClient, FakePaymentClient>();
+                });
+            });
+
+            using var client = hostFactory.CreateClient();
+            var request = new PlaceOrderRequest(
+                Guid.NewGuid(),
+                "123 Lê Lợi",
+                "Hà Nội",
+                "Việt Nam",
+                "100000",
+                [
+                    new PlaceOrderRequestItem(Guid.Parse("a73b5e21-4c0f-4f91-8a61-2e5c9501d101"), 1, 250000m, "VND")
+                ]);
+
+            using var createResponse = await client.PostAsJsonAsync("/api/v1/orders", request);
+            Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
+
+            using var orderDocument = JsonDocument.Parse(await createResponse.Content.ReadAsStringAsync());
+            var orderId = orderDocument.RootElement.GetProperty("orderId").GetGuid();
+
+            var cancelled = false;
+            for (var attempt = 0; attempt < 60; attempt++)
+            {
+                using var getResponse = await client.GetAsync($"/api/v1/orders/{orderId}");
+                if (getResponse.StatusCode == HttpStatusCode.OK)
+                {
+                    using var detailDocument = JsonDocument.Parse(await getResponse.Content.ReadAsStringAsync());
+                    var status = detailDocument.RootElement.GetProperty("status").GetString();
+                    if (string.Equals(status, "Cancelled", StringComparison.Ordinal))
+                    {
+                        cancelled = true;
+                        break;
+                    }
+                }
+
+                await Task.Delay(500);
+            }
+
+            Assert.True(cancelled, "Order không chuyển sang Cancelled khi reserve fail.");
+
+            await using var scope = hostFactory.Services.CreateAsyncScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+            var sagaState = await dbContext.SagaStates.FirstOrDefaultAsync(state => state.OrderId == orderId);
+
+            Assert.NotNull(sagaState);
+            Assert.Equal("FailedInventory", sagaState.State);
+        }
+        finally
+        {
+            await ((IAsyncLifetime)factory).DisposeAsync();
+        }
     }
 
     private sealed class FakeInventoryClient : IInventoryClient
     {
+        public bool FailReserve { get; init; }
+
         public Task<bool> ReserveAsync(Guid productId, int quantity, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(!FailReserve);
+        }
+
+        public Task<bool> ReleaseAsync(Guid productId, int quantity, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(true);
         }
@@ -102,9 +251,16 @@ public sealed class OrderSagaIntegrationTests : IClassFixture<ShopFlowWebApplica
 
     private sealed class FakePaymentClient : IPaymentClient
     {
+        private readonly string _status;
+
+        public FakePaymentClient(string status = "Succeeded")
+        {
+            _status = status;
+        }
+
         public Task<PaymentChargeResult?> ChargeAsync(Guid orderId, decimal amount, string currency, CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<PaymentChargeResult?>(new PaymentChargeResult("Succeeded"));
+            return Task.FromResult<PaymentChargeResult?>(new PaymentChargeResult(_status));
         }
     }
 }
