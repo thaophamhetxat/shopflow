@@ -47,6 +47,7 @@ public static class DependencyInjection
         services.RemoveAll<IIdempotencyStore>();
         services.RemoveAll<IOrderSaga>();
         services.RemoveAll<ISagaStateRepository>();
+        services.RemoveAll<ISagaReservationRepository>();
         services.RemoveAll<IInventoryClient>();
         services.RemoveAll<IPaymentClient>();
 
@@ -54,6 +55,9 @@ public static class DependencyInjection
         services.AddScoped<IOrderReadModelRepository, OrderRepository>();
         services.AddScoped<IOrderSaga, OrderSaga>();
         services.AddScoped<ISagaStateRepository, SagaStateRepository>();
+        // Day 53 cần lưu row `saga_reservations` qua repository thực tế để resume lại sau crash không ghi trùng reserve và compensation đọc đúng dữ liệu DB.
+        // Nếu thiếu đăng ký này, DI sẽ rơi về constructor 5 tham số dùng repo in-memory, nên hành vi chạy ngoài app khác với unit test và sẽ sai ở retry/crash.
+        services.AddScoped<ISagaReservationRepository, SagaReservationRepository>();
         services.AddScoped<IInventoryClient, InventoryHttpClient>();
         services.AddScoped<IPaymentClient, PaymentHttpClient>();
 
@@ -102,6 +106,7 @@ public static class DependencyInjection
         services.RemoveAll<IIdempotencyStore>();
         services.RemoveAll<IOrderSaga>();
         services.RemoveAll<ISagaStateRepository>();
+        services.RemoveAll<ISagaReservationRepository>();
         services.RemoveAll<IInventoryClient>();
         services.RemoveAll<IPaymentClient>();
 
@@ -113,6 +118,9 @@ public static class DependencyInjection
         services.AddScoped<IOrderReadModelRepository, OrderRepository>();
         services.AddScoped<IOrderSaga, OrderSaga>();
         services.AddScoped<ISagaStateRepository, SagaStateRepository>();
+        // Day 53 cần lưu row `saga_reservations` qua repository thực tế để resume lại sau crash không ghi trùng reserve và compensation đọc đúng dữ liệu DB.
+        // Nếu thiếu đăng ký này, DI sẽ rơi về constructor 5 tham số dùng repo in-memory, nên hành vi chạy ngoài app khác với unit test và sẽ sai ở retry/crash.
+        services.AddScoped<ISagaReservationRepository, SagaReservationRepository>();
         services.AddScoped<IInventoryClient, InventoryHttpClient>();
         services.AddScoped<IPaymentClient, PaymentHttpClient>();
         services.AddHttpClient("InventoryService", client =>
