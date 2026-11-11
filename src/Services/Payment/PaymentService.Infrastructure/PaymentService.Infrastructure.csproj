@@ -1,4 +1,15 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+﻿<!-- Project này chứa PostgreSQL persistence và mock gateway của PaymentService ở Day 48. -->
+<!-- Gateway Day 49 sẽ thay implementation mock, còn Saga Day 52 sẽ dùng repository Payment. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.11">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.11" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\PaymentService.Domain\PaymentService.Domain.csproj" />

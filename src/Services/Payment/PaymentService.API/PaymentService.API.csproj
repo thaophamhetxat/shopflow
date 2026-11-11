@@ -1,3 +1,5 @@
+<!-- Project này cung cấp endpoint HTTP, health check và Swagger cho PaymentService ở Day 48. -->
+<!-- Gateway Day 49 sẽ proxy các route; Saga Day 52 sẽ gọi Charge/Refund qua API này. -->
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
@@ -7,6 +9,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.11">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.34" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
   </ItemGroup>

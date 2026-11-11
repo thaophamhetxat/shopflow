@@ -1,18 +1,32 @@
-// File này tạo API minimal cho InventoryService để project build được ở Day 38.
-// Layer API này chỉ khởi tạo app và health check, không chứa nghiệp vụ Reserve/Release.
-// Day 39+ mới mô hình domain và transaction thực tế, còn ở đây chỉ giữ shell để build và test startup.
-// Chúng ta giới hạn đúng Day 38 và không viết nghiệp vụ cùng lúc để giữ bounded context rõ ràng.
-using Microsoft.AspNetCore.Builder;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
+// File này khởi tạo Inventory API, đăng ký use case và công bố endpoint/health/Swagger.
+// Cập nhật ở Day 48 để Reserve, Release và đọc tồn kho chạy qua MediatR và PostgreSQL.
+// Gateway Day 49 sẽ proxy các route này; Saga Day 52 sẽ gọi Reserve/Release để điều phối kho.
+using InventoryService.API.Endpoints;
+using InventoryService.Application;
+using InventoryService.Infrastructure;
+using Microsoft.OpenApi.Models;
 
-// Tạo builder: nơi đăng ký dependency injection trước khi app khởi chạy.
 var builder = WebApplication.CreateBuilder(args);
-// Đăng ký health check: để /health xác nhận InventoryService còn sống và sẵn sàng lắng nghe.
+
 builder.Services.AddHealthChecks();
-// Build app từ builder: từ đây service có thể map endpoint nhưng không thêm DI nữa.
+builder.Services.AddApplication();
+builder.Services.AddInfrastructure(builder.Configuration);
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new OpenApiInfo { Title = "ShopFlow Inventory API v1", Version = "v1" });
+});
+
 var app = builder.Build();
-// Map endpoint GET /health: trả 200 khi InventoryService khỏe để hoạt động kiểm tra thủ công.
+
+app.UseSwagger();
+app.UseSwaggerUI(options =>
+{
+    options.SwaggerEndpoint("/swagger/v1/swagger.json", "ShopFlow Inventory API v1");
+});
+
 app.MapHealthChecks("/health");
-// Chạy app: khởi động HTTP server để service nhận request ở port được cấu hình sẵn.
+app.MapInventoryEndpoints();
+app.MapGet("/health/live", () => Results.Ok(new { status = "Live" }));
+
 app.Run();

@@ -1,4 +1,15 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+﻿<!-- Project này chứa PostgreSQL persistence của InventoryService, được triển khai ở Day 48. -->
+<!-- Gateway Day 49 và Saga Day 52 sẽ dùng repository này cho Reserve/Release tồn kho. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.11">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.11" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\InventoryService.Domain\InventoryService.Domain.csproj" />

@@ -1,4 +1,13 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+﻿<!-- Project này chứa use case CQRS của InventoryService, được triển khai ở Day 48. -->
+<!-- Gateway Day 49 và Saga Day 52 sẽ gọi các command Reserve/Release đã đăng ký ở đây. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <PackageReference Include="FluentValidation" Version="11.11.0" />
+    <PackageReference Include="MediatR" Version="12.4.1" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\InventoryService.Domain\InventoryService.Domain.csproj" />

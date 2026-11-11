@@ -1,4 +1,6 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+﻿<!-- Project này chứa mô hình nghiệp vụ của PaymentService, được triển khai ở Day 48. -->
+<!-- Gateway Day 49 và Saga Day 52 sẽ dùng Payment để Charge/Refund. -->
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
