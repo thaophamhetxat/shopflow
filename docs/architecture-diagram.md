@@ -6,9 +6,10 @@ Tài liệu này vẽ giới hạn dữ liệu, luồng nghiệp vụ và bảng
 
 ```mermaid
 flowchart TD
-    Client[Client] -->|PlaceOrder| Order[Order\nDatabase: shopflow_order\nKhông dùng chung database]
-    Order -->|Reserve/Release| Inventory[Inventory\nDatabase: shopflow_inventory\nKhông dùng chung database]
-    Order -->|Charge/Refund| Payment[Payment\nDatabase: shopflow_payment\nKhông dùng chung database]
+    Client[Client] -->|Gọi qua gateway| Gateway[ShopFlow.Gateway\nYARP, :5000\nKhông có database\nKhông giữ state]
+    Gateway -->|Proxy /api/v1/orders /api/v2/orders| Order[Order\nDatabase: shopflow_order\nKhông dùng chung database]
+    Gateway -->|Proxy /inventory| Inventory[Inventory\nDatabase: shopflow_inventory\nKhông dùng chung database]
+    Gateway -->|Proxy /payments| Payment[Payment\nDatabase: shopflow_payment\nKhông dùng chung database]
     Order -->|OrderPlaced / OrderCancelled / PaymentFailed| Notification[Notification\nDatabase: shopflow_notification\nKhông dùng chung database]
     Notification -->|Notify| Client
 ```

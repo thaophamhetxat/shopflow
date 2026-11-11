@@ -16,8 +16,18 @@ ShopFlow là solution .NET 8 theo mô hình Clean Architecture hướng đến 4
 1. Chạy docker compose up -d để khởi động PostgreSQL, Redis và RabbitMQ.
 2. Chạy từng API bằng dotnet run --project src/Services/<Service>/<Project>.csproj.
 3. Kiểm tra service bằng GET /health trên port được cấu hình khi app đã start.
+4. Chạy gateway Day 49 theo command: `dotnet run --project src/Gateway/ShopFlow.Gateway --launch-profile http` sau khi 3 API đang chạy local.
 
 > Lưu ý: mật khẩu local ShopFlow123! chỉ dùng cho bài tập trên máy dev, không được dùng cho môi trường production.
+
+## Gateway Day 49
+
+| Service | Port | Endpoint chính |
+| --- | --- | --- |
+| ShopFlow.Gateway (YARP) | `5000` | `/health`, `/health/live`, proxy route tới Order/Inventory/Payment |
+| Order API | `5181` | `/api/v1/orders`, `/api/v2/orders/{id}` |
+| Inventory API | `5140` | `/inventory/{id}`, `/inventory/reserve`, `/inventory/release` |
+| Payment API | `5199` | `/payments`, `/payments/{id}`, `/payments/{id}/refund` |
 
 ## Lộ trình Day 38–67
 

@@ -66,6 +66,29 @@ services:
     # Restart nếu RabbitMQ báo lỗi để không ngắt quá trình development cục bộ.
     restart: unless-stopped
 
+  shopflow-gateway:
+    # Gateway YARP này chỉ cần port 5000 cho client và không giữ database hay state trong container.
+    build:
+      context: .
+      dockerfile: src/Gateway/ShopFlow.Gateway/Dockerfile
+    # Container này được đặt tên rõ ràng để dễ dừng hoặc kiểm tra khi smoke test Day 49 chạy.
+    container_name: shopflow-gateway
+    # Mở cổng 5000 duy nhất cho client gọi qua gateway thay vì gọi từng service trực tiếp.
+    ports:
+      - "5000:5000"
+    # Environment này cấu hình ASP.NET Core chạy ở 5000 và override cluster destination sang localhost host machine.
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:5000
+      - ReverseProxy__Clusters__ordersCluster__Destinations__orders1__Address=http://host.docker.internal:5181
+      - ReverseProxy__Clusters__inventoryCluster__Destinations__inventory1__Address=http://host.docker.internal:5140
+      - ReverseProxy__Clusters__paymentsCluster__Destinations__payments1__Address=http://host.docker.internal:5199
+    # Extra hosts cần thiết vì localhost trong container là chính bản thân gateway, không phải máy host chạy API local.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Không đặt depends_on vì Day 49 không có 3 API trong compose; gateway chỉ proxy đến process local đã chạy ngoài compose.
+    restart: unless-stopped
+
 volumes:
   shopflow_postgres_data:
   shopflow_redis_data:

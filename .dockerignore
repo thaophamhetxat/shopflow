@@ -1,0 +1,5 @@
+# File này loại bỏ thư mục build và metadata khỏi context Docker để image lean hơn và không copy nhầm artifact.
+**/bin/
+**/obj/
+.git/
+.vs/
