@@ -7,6 +7,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using OrderService.Application.Idempotency;
+using OrderService.Application.Queries;
 using OrderService.Application.Sagas;
 using OrderService.Domain.Repositories;
 using OrderService.Infrastructure.Idempotency;
@@ -50,6 +51,7 @@ public static class DependencyInjection
         services.RemoveAll<IPaymentClient>();
 
         services.AddScoped<IOrderRepository, OrderRepository>();
+        services.AddScoped<IOrderReadModelRepository, OrderRepository>();
         services.AddScoped<IOrderSaga, OrderSaga>();
         services.AddScoped<ISagaStateRepository, SagaStateRepository>();
         services.AddScoped<IInventoryClient, InventoryHttpClient>();
@@ -58,13 +60,11 @@ public static class DependencyInjection
         services.AddHttpClient("InventoryService", client =>
         {
             client.BaseAddress = new Uri("http://localhost:5140");
-            client.Timeout = TimeSpan.FromSeconds(10);
         });
 
         services.AddHttpClient("PaymentService", client =>
         {
             client.BaseAddress = new Uri("http://localhost:5199");
-            client.Timeout = TimeSpan.FromSeconds(10);
         });
 
         services.AddStackExchangeRedisCache(options => options.Configuration = "localhost:6379");
@@ -110,6 +110,7 @@ public static class DependencyInjection
 
         services.AddStackExchangeRedisCache(options => options.Configuration = redisConnectionString);
         services.AddScoped<IOrderRepository, OrderRepository>();
+        services.AddScoped<IOrderReadModelRepository, OrderRepository>();
         services.AddScoped<IOrderSaga, OrderSaga>();
         services.AddScoped<ISagaStateRepository, SagaStateRepository>();
         services.AddScoped<IInventoryClient, InventoryHttpClient>();
