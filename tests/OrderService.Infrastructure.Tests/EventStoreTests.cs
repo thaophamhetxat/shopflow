@@ -4,6 +4,7 @@ using OrderService.Domain.Aggregates;
 using OrderService.Domain.Entities;
 using OrderService.Domain.Enums;
 using OrderService.Domain.Events;
+using OrderService.Domain.Exceptions;
 using OrderService.Domain.ValueObjects;
 using OrderService.Infrastructure.Persistence;
 using Xunit;
@@ -128,6 +129,53 @@ public sealed class EventStoreTests
             Assert.Equal(OrderStatus.Confirmed, loaded.Status);
             Assert.Equal(40m, loaded.Total.Amount);
             Assert.Equal(11, loaded.Version);
+        }
+        finally
+        {
+            await using var context = CreateContext();
+            await context.Database.MigrateAsync();
+            await ResetDatabaseAsync(context);
+            DatabaseLock.Release();
+        }
+    }
+
+    // Header comment tiếng Việt: test này chứng minh Evidence Day 55 cần thiết cho optimistic concurrency trong event stream.
+    // Hai writer cùng ghi vào cùng stream với cùng expectedVersion 0, writer thứ hai sẽ bị chặn bởi ConcurrencyException,
+    // và stream thực tế vẫn chỉ giữ đúng 1 event sau khi stale append thất bại, không tự ghi thêm bản chồng lấn.
+    [Fact]
+    public async Task EventStore_ConcurrentAppend_ThrowsConcurrencyException()
+    {
+        await DatabaseLock.WaitAsync();
+        try
+        {
+            await using var context = CreateContext();
+            await context.Database.MigrateAsync();
+            await ResetDatabaseAsync(context);
+
+            var orderId = OrderId.New();
+            var customerId = CustomerId.New();
+            var shippingAddress = new Address("12 Trần Hưng Đạo", "Hải Phòng", "Vietnam", "040000");
+            var firstEvent = new OrderPlacedEvent(
+                orderId,
+                customerId,
+                new[]
+                {
+                    new OrderItem(Guid.NewGuid(), 2, new Money(25m, "USD"))
+                },
+                shippingAddress,
+                new Money(50m, "USD"),
+                DateTime.UtcNow);
+
+            var eventStore = new EventStore(context);
+            await eventStore.AppendAsync(orderId, new[] { firstEvent }, 0, CancellationToken.None);
+            await context.SaveChangesAsync();
+
+            var staleEvent = firstEvent with { OccurredOn = DateTime.UtcNow.AddMinutes(1) };
+            await Assert.ThrowsAsync<ConcurrencyException>(() => eventStore.AppendAsync(orderId, new[] { staleEvent }, 0, CancellationToken.None));
+
+            var remainingEvents = await eventStore.GetEventsAsync(orderId, 0, CancellationToken.None);
+            Assert.Single(remainingEvents);
+            Assert.Single(await context.OrderEvents.AsNoTracking().ToListAsync());
         }
         finally
         {
