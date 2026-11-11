@@ -37,6 +37,22 @@ public sealed class ProductRepository : IProductRepository
     }
 
     /// <summary>
+    /// Kiểm tra product nhanh gọn: trả true khi ID tồn tại và tồn kho đủ yêu cầu; false nếu không tồn tại hoặc thiếu hàng.
+    /// </summary>
+    /// <param name="id">ProductId cần kiểm tra.</param>
+    /// <param name="quantity">Số lượng phải có trên kho để xem là đủ.</param>
+    /// <param name="cancellationToken">Token hủy thao tác.</param>
+    /// <returns>True khi kho đủ; ngược lại false.</returns>
+    public ValueTask<bool> CheckStockAsync(ProductId id, int quantity, CancellationToken cancellationToken = default)
+    {
+        // Không load aggregate hay trả về entity; query này chỉ cần AnyAsync với filter đúng semantics cho stock check nhanh.
+        // Chúng ta không nối method này vào Reserve để giữ nguyên quy tắc aggregate guard và tránh query thừa trên đường success.
+        return new ValueTask<bool>(_dbContext.Products
+            .AsNoTracking()
+            .AnyAsync(product => product.Id == id && product.StockQuantity >= quantity, cancellationToken));
+    }
+
+    /// <summary>
     /// Tìm Product theo strongly typed ID, trả null khi không tồn tại.
     /// </summary>
     /// <param name="id">ProductId cần tìm.</param>

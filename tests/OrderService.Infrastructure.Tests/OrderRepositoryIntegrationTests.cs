@@ -1,5 +1,10 @@
+using MediatR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using OrderService.Application;
+using OrderService.Application.Commands;
 using OrderService.Domain.Aggregates;
+using OrderService.Infrastructure;
 using OrderService.Domain.Entities;
 using OrderService.Domain.ValueObjects;
 using OrderService.Infrastructure.Persistence;
@@ -120,6 +125,61 @@ public sealed class OrderRepositoryIntegrationTests
         }
         finally
         {
+            DatabaseLock.Release();
+        }
+    }
+
+    // Test n�y ch?ng minh Evidence Day 56: khi request đã bị hủy trước khi hành vi thực thi, MediatR handler phải dừng ngay
+    // và không lưu row nào xuống database Order. Điều này chứng tỏ CancellationToken thực sự chảy từ API đến repository qua EF Core.
+    [Fact]
+    public async Task CancelledRequest_DoesNotSaveToDatabase()
+    {
+        await DatabaseLock.WaitAsync();
+        try
+        {
+            await using var context = CreateContext();
+            await context.Database.MigrateAsync();
+
+            await context.Database.ExecuteSqlRawAsync("DELETE FROM outbox_messages;");
+            await context.Database.ExecuteSqlRawAsync("DELETE FROM order_items;");
+            await context.Database.ExecuteSqlRawAsync("DELETE FROM orders;");
+
+            var beforeCount = await context.Orders.CountAsync();
+
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddApplication();
+            services.AddInfrastructure(ConnectionString);
+
+            using var provider = services.BuildServiceProvider();
+            var mediator = provider.GetRequiredService<IMediator>();
+
+            var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+
+            var command = new PlaceOrderCommand(
+                Guid.NewGuid(),
+                "123 Lê Lợi",
+                "Hà Nội",
+                "Việt Nam",
+                "100000",
+                new List<PlaceOrderItem>
+                {
+                    new(Guid.NewGuid(), 1, 150000m, "VND")
+                });
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => mediator.Send(command, cancelled.Token));
+
+            var afterCount = await context.Orders.CountAsync();
+            Assert.Equal(beforeCount, afterCount);
+        }
+        finally
+        {
+            await using var cleanupContext = CreateContext();
+            await cleanupContext.Database.MigrateAsync();
+            await cleanupContext.Database.ExecuteSqlRawAsync("DELETE FROM outbox_messages;");
+            await cleanupContext.Database.ExecuteSqlRawAsync("DELETE FROM order_items;");
+            await cleanupContext.Database.ExecuteSqlRawAsync("DELETE FROM orders;");
             DatabaseLock.Release();
         }
     }

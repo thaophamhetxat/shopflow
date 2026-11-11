@@ -28,7 +28,7 @@ public static class OrderEndpoints
         var v2 = app.MapGroup("/api/v2");
 
         // POST /api/v1/orders: tạo đơn qua PlaceOrderCommand, trả 201 + Location vì tài nguyên mới được tạo ở /api/v1/orders/{id}.
-        v1.MapPost("/orders", async (HttpContext httpContext, IMediator mediator, PlaceOrderRequest request) =>
+        v1.MapPost("/orders", async (HttpContext httpContext, IMediator mediator, PlaceOrderRequest request, CancellationToken cancellationToken) =>
         {
             try
             {
@@ -46,7 +46,7 @@ public static class OrderEndpoints
                         item.UnitPriceCurrency)).ToList(),
                     idempotencyKey);
 
-                var orderId = await mediator.Send(command);
+                var orderId = await mediator.Send(command, cancellationToken);
                 return Results.Created($"/api/v1/orders/{orderId.Value}", new { orderId = orderId.Value });
             }
             catch (Exception exception)
@@ -56,11 +56,11 @@ public static class OrderEndpoints
         });
 
         // GET /api/v1/orders/{id}: đọc chi tiết đơn bằng GetOrderByIdQuery để trả payload v1 đầy đủ mà không thêm field mới.
-        v1.MapGet("/orders/{id:guid}", async (HttpContext httpContext, IMediator mediator, Guid id) =>
+        v1.MapGet("/orders/{id:guid}", async (HttpContext httpContext, IMediator mediator, Guid id, CancellationToken cancellationToken) =>
         {
             try
             {
-                var detail = await mediator.Send(new GetOrderByIdQuery(id));
+                var detail = await mediator.Send(new GetOrderByIdQuery(id), cancellationToken);
                 if (detail is null)
                 {
                     throw new OrderNotFoundException(id);
@@ -75,7 +75,7 @@ public static class OrderEndpoints
         });
 
         // GET /api/v1/orders: list theo customerId với cursor và pageSize, trả 200 khi hợp lệ, 422 khi input không parse được hoặc thiếu tham số bắt buộc.
-        v1.MapGet("/orders", async (HttpContext httpContext, IMediator mediator) =>
+        v1.MapGet("/orders", async (HttpContext httpContext, IMediator mediator, CancellationToken cancellationToken) =>
         {
             try
             {
@@ -114,7 +114,7 @@ public static class OrderEndpoints
                     });
                 }
 
-                var result = await mediator.Send(new ListOrdersByCustomerQuery(customerId, cursorOrderId, pageSize));
+                var result = await mediator.Send(new ListOrdersByCustomerQuery(customerId, cursorOrderId, pageSize), cancellationToken);
                 return Results.Ok(result);
             }
             catch (Exception exception)
@@ -124,11 +124,11 @@ public static class OrderEndpoints
         });
 
         // DELETE /api/v1/orders/{id}: hủy đơn theo CancelOrderCommand, không phải xóa cứng khỏi DB; đơn chuyển sang Cancelled và vẫn còn để tra cứu.
-        v1.MapDelete("/orders/{id:guid}", async (HttpContext httpContext, IMediator mediator, Guid id) =>
+        v1.MapDelete("/orders/{id:guid}", async (HttpContext httpContext, IMediator mediator, Guid id, CancellationToken cancellationToken) =>
         {
             try
             {
-                await mediator.Send(new CancelOrderCommand(id));
+                await mediator.Send(new CancelOrderCommand(id), cancellationToken);
                 return Results.NoContent();
             }
             catch (Exception exception)
@@ -138,11 +138,11 @@ public static class OrderEndpoints
         });
 
         // GET /api/v2/orders/{id}: cùng query v1 nhưng trả dữ liệu v2 với EstimatedDelivery thêm vào để demo contract versioning không làm v1 bị phá vỡ.
-        v2.MapGet("/orders/{id:guid}", async (HttpContext httpContext, IMediator mediator, Guid id) =>
+        v2.MapGet("/orders/{id:guid}", async (HttpContext httpContext, IMediator mediator, Guid id, CancellationToken cancellationToken) =>
         {
             try
             {
-                var detail = await mediator.Send(new GetOrderByIdQuery(id));
+                var detail = await mediator.Send(new GetOrderByIdQuery(id), cancellationToken);
                 if (detail is null)
                 {
                     throw new OrderNotFoundException(id);

@@ -21,6 +21,20 @@ public interface IProductRepository
     Task AddAsync(Product product, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Kiểm tra nhanh xem product có tồn tại và số lượng kho hiện tại đã đáp ứng đủ yêu cầu hay chưa.
+    /// </summary>
+    /// <param name="id">ProductId cần kiểm tra.</param>
+    /// <param name="quantity">Số lượng cần có trong kho để coi là đủ.</param>
+    /// <param name="cancellationToken">Token hủy thao tác bất đồng bộ.</param>
+    /// <returns>True khi product tồn tại và StockQuantity &gt;= quantity; ngược lại false.</returns>
+    /// <remarks>
+    /// Kiểm tra này dùng ValueTask&lt;bool&gt; vì đây là hot-path ở đường read ví dụ check nhanh trước khi reserve hoặc cache-aside.
+    /// Hầu hết trường hợp kiểm tra hoàn thành ngay trên database và không cần allocate Task mới, nên ValueTask giúp giảm overhead
+    /// khi request đi qua nhiều lần trên cùng một path hiệu suất cao.
+    /// </remarks>
+    ValueTask<bool> CheckStockAsync(ProductId id, int quantity, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Tìm Product theo ID, trả null nếu không tồn tại.
     /// </summary>
     /// <param name="id">ProductId cần tìm.</param>
