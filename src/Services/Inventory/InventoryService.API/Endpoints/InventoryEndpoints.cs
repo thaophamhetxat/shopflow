@@ -28,12 +28,14 @@ public static class InventoryEndpoints
             ReserveStockRequest request,
             ISender sender,
             HttpContext context,
+            CancellationToken cancellationToken,
             ILoggerFactory loggerFactory) =>
         {
             var logger = loggerFactory.CreateLogger("InventoryEndpoints");
             try
             {
-                var result = await sender.Send(new ReserveStockCommand(request.ProductId, request.Quantity), context.RequestAborted);
+                // Client ngắt kết nối thì RequestAborted phải dừng ngay để handler/repository/EF Core không ghi dữ liệu cho request đã chết.
+                var result = await sender.Send(new ReserveStockCommand(request.ProductId, request.Quantity), cancellationToken);
                 return Results.Ok(result);
             }
             catch (Exception exception)
@@ -46,12 +48,14 @@ public static class InventoryEndpoints
             ReleaseStockRequest request,
             ISender sender,
             HttpContext context,
+            CancellationToken cancellationToken,
             ILoggerFactory loggerFactory) =>
         {
             var logger = loggerFactory.CreateLogger("InventoryEndpoints");
             try
             {
-                var result = await sender.Send(new ReleaseStockCommand(request.ProductId, request.Quantity), context.RequestAborted);
+                // Client ngắt kết nối thì RequestAborted phải dừng ngay để tránh ghi thay đổi kho cho request đã bị hủy.
+                var result = await sender.Send(new ReleaseStockCommand(request.ProductId, request.Quantity), cancellationToken);
                 return Results.Ok(result);
             }
             catch (Exception exception)
@@ -64,12 +68,14 @@ public static class InventoryEndpoints
             Guid id,
             ISender sender,
             HttpContext context,
+            CancellationToken cancellationToken,
             ILoggerFactory loggerFactory) =>
         {
             var logger = loggerFactory.CreateLogger("InventoryEndpoints");
             try
             {
-                var result = await sender.Send(new GetProductQuery(id), context.RequestAborted);
+                // Client ngắt kết nối thì RequestAborted phải chấm dứt query để không kéo dài DB call vô ích trên request đã chết.
+                var result = await sender.Send(new GetProductQuery(id), cancellationToken);
                 if (result is null)
                 {
                     throw new ProductNotFoundException(id);

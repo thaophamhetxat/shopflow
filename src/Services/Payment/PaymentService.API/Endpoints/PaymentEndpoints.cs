@@ -28,14 +28,16 @@ public static class PaymentEndpoints
             ProcessPaymentRequest request,
             ISender sender,
             HttpContext context,
+            CancellationToken cancellationToken,
             ILoggerFactory loggerFactory) =>
         {
             var logger = loggerFactory.CreateLogger("PaymentEndpoints");
             try
             {
+                // Client ngắt kết nối thì RequestAborted phải hủy nghiệp vụ trước khi ghi payment; tránh lưu dữ liệu của request đã chết.
                 var payment = await sender.Send(
                     new ProcessPaymentCommand(request.OrderId, request.Amount, request.Currency),
-                    context.RequestAborted);
+                    cancellationToken);
 
                 // Gateway từ chối vẫn là kết quả Payment Failed; POST luôn trả 201 vì khoản thanh toán đã được ghi nhận.
                 return Results.Created($"/payments/{payment.PaymentId}", payment);
@@ -50,12 +52,14 @@ public static class PaymentEndpoints
             Guid id,
             ISender sender,
             HttpContext context,
+            CancellationToken cancellationToken,
             ILoggerFactory loggerFactory) =>
         {
             var logger = loggerFactory.CreateLogger("PaymentEndpoints");
             try
             {
-                var payment = await sender.Send(new GetPaymentQuery(id), context.RequestAborted);
+                // Client ngắt kết nối thì RequestAborted phải hủy query và không để EF Core tiếp tục đọc payment cũ cho request đã bị bỏ.
+                var payment = await sender.Send(new GetPaymentQuery(id), cancellationToken);
                 if (payment is null)
                 {
                     throw new PaymentNotFoundException(id);
@@ -73,12 +77,14 @@ public static class PaymentEndpoints
             Guid id,
             ISender sender,
             HttpContext context,
+            CancellationToken cancellationToken,
             ILoggerFactory loggerFactory) =>
         {
             var logger = loggerFactory.CreateLogger("PaymentEndpoints");
             try
             {
-                var payment = await sender.Send(new RefundPaymentCommand(id), context.RequestAborted);
+                // Client ngắt kết nối thì RequestAborted phải dừng refund ngay để không lưu trạng thái payment cho request đã bị hủy.
+                var payment = await sender.Send(new RefundPaymentCommand(id), cancellationToken);
                 return Results.Ok(payment);
             }
             catch (Exception exception)
