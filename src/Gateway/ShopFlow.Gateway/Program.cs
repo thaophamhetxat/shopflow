@@ -4,6 +4,10 @@ var builder = WebApplication.CreateBuilder(args);
 // Day 49 không dùng transform đổi path hay kèm auth vì contract downstream đã đúng chuẩn và không có JWT nào được định nghĩa.
 builder.Services.AddReverseProxy().LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
 
+// Đăng ký client riêng chỉ để probe /health downstream, timeout 2 giây mỗi service: 1 service treo không được làm /health của gateway treo theo.
+// Dùng IHttpClientFactory thay vì tự tạo HttpClient trực tiếp để tránh tạo socket mới mỗi lần gọi và để timeout được quản lý tập trung ở đây.
+builder.Services.AddHttpClient("GatewayHealth", client => client.Timeout = TimeSpan.FromSeconds(2));
+
 var app = builder.Build();
 
 // Dòng này định nghĩa endpoint live probe của gateway, riêng biệt với downstream health, để kiểm tra process gateway đang ngủ hay sống.
@@ -12,9 +16,11 @@ app.MapGet("/health/live", () => Results.Ok(new { status = "Live" }));
 
 // Dòng này định nghĩa endpoint /health tổng hợp, dùng HttpClient probe từng service Order/Inventory/Payment rồi trả 200 Healthy hoặc 503 Degraded.
 // YARP không tự gộp health của các cluster trong Day 49, nên phải tự viết logic này để gateway đánh giá service nào còn sống.
-app.MapGet("/health", async () =>
+// Endpoint /health tổng hợp: lấy client từ factory (đã gắn timeout 2 giây) thay vì tự tạo HttpClient trực tiếp.
+app.MapGet("/health", async (IHttpClientFactory httpClientFactory) =>
 {
-    using var httpClient = new HttpClient();
+    // Client này đã có timeout 2 giây từ lúc đăng ký: downstream treo quá 2 giây thì GetAsync ném TaskCanceledException, catch bên dưới đánh dấu Unhealthy.
+    var httpClient = httpClientFactory.CreateClient("GatewayHealth");
     var serviceTargets = new[]
     {
         new { Name = "orders", Url = "http://localhost:5181/health" },
