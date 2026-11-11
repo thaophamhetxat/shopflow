@@ -35,6 +35,19 @@ public interface IProductRepository
     ValueTask<bool> CheckStockAsync(ProductId id, int quantity, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Khóa hàng theo row và thực hiện reserve trong một transaction rõ ràng để tránh oversell ở các request đồng thời.
+    /// </summary>
+    /// <param name="id">ProductId cần reserve.</param>
+    /// <param name="quantity">Số lượng cần giữ.</param>
+    /// <param name="cancellationToken">Token hủy thao tác.</param>
+    /// <returns>Product sau khi đã trừ kho thành công.</returns>
+    /// <remarks>
+    /// Method này trả về aggregate Product thay vì DTO Application để không cho Domain phụ thuộc vào layer Application.
+    /// Đường reserve thật cần lock row trong database nên logic này tập trung ở Infrastructure; handler chỉ map dữ liệu sau khi reserve.
+    /// </remarks>
+    Task<Product> ReserveAsync(ProductId id, int quantity, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Tìm Product theo ID, trả null nếu không tồn tại.
     /// </summary>
     /// <param name="id">ProductId cần tìm.</param>

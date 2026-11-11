@@ -2,6 +2,7 @@
 // Tạo ở Day 48 để command/query đọc và lưu aggregate mà không dùng Include vì Product không có collection con.
 // Gateway Day 49 và Saga Day 52 sẽ truy cập tồn kho qua hợp đồng repository này.
 
+using InventoryService.Application;
 using InventoryService.Domain.Aggregates;
 using InventoryService.Domain.Repositories;
 using InventoryService.Domain.ValueObjects;
@@ -50,6 +51,46 @@ public sealed class ProductRepository : IProductRepository
         return new ValueTask<bool>(_dbContext.Products
             .AsNoTracking()
             .AnyAsync(product => product.Id == id && product.StockQuantity >= quantity, cancellationToken));
+    }
+
+    /// <summary>
+    /// Reserve hàng bằng SELECT FOR UPDATE trong transaction rõ ràng để chặn race condition giữa nhiều request cùng đọc stock.
+    /// </summary>
+    /// <param name="id">ProductId cần reserve.</param>
+    /// <param name="quantity">Số lượng cần giữ.</param>
+    /// <param name="cancellationToken">Token hủy thao tác.</param>
+    /// <returns>Product sau khi đã trừ kho và lưu transaction thành công.</returns>
+    /// <exception cref="ProductNotFoundException">Ném khi không tìm thấy product theo id.</exception>
+    /// <exception cref="InventoryDomainException">Ném khi số lượng không hợp lệ hoặc kho không đủ; exception này được giữ nguyên theo domain rule.</exception>
+    public async Task<Product> ReserveAsync(ProductId id, int quantity, CancellationToken cancellationToken = default)
+    {
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+
+        try
+        {
+            // Transaction tường minh là bắt buộc ở đây: FOR UPDATE chỉ giữ lock trong khoảng transaction.
+            // Nếu không mở transaction, SELECT FOR UPDATE sẽ release lock ngay sau câu SELECT và race condition vẫn xảy ra.
+            var product = await _dbContext.Products
+                .FromSqlRaw("SELECT * FROM products WHERE id = {0} FOR UPDATE", id.Value)
+                .SingleOrDefaultAsync(cancellationToken);
+
+            if (product is null)
+            {
+                throw new ProductNotFoundException(id.Value);
+            }
+
+            // Domain rule Reserve phải giữ nguyên: thiếu hàng throw InventoryDomainException, không sửa aggregate.
+            product.Reserve(quantity);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return product;
+        }
+        catch
+        {
+            // Nếu Reserve ném thiếu hàng hoặc SaveChanges lỗi, rollback transaction để tránh lưu trạng thái bán trùng.
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
     }
 
     /// <summary>

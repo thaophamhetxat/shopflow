@@ -18,7 +18,7 @@ namespace InventoryService.Infrastructure.Tests;
 [Collection("Infrastructure Database")]
 public sealed class ProductRepositoryIntegrationTests
 {
-    private static readonly SemaphoreSlim DatabaseLock = new(1, 1);
+    private static readonly SemaphoreSlim DatabaseLock = InventoryTestSynchronization.DatabaseLock;
 
     private static string ConnectionString =>
         Environment.GetEnvironmentVariable("ConnectionStrings__InventoryDb")

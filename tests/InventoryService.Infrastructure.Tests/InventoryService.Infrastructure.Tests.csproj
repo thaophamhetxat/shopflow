@@ -21,6 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\BuildingBlocks\ShopFlow.BuildingBlocks\ShopFlow.BuildingBlocks.csproj" />
     <ProjectReference Include="..\..\src\Services\Inventory\InventoryService.Domain\InventoryService.Domain.csproj" />
     <ProjectReference Include="..\..\src\Services\Inventory\InventoryService.Application\InventoryService.Application.csproj" />
     <ProjectReference Include="..\..\src\Services\Inventory\InventoryService.Infrastructure\InventoryService.Infrastructure.csproj" />

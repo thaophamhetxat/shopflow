@@ -4,6 +4,9 @@
 using InventoryService.API.Endpoints;
 using InventoryService.Application;
 using InventoryService.Infrastructure;
+using InventoryService.Infrastructure.Persistence;
+using InventoryService.Infrastructure.Persistence.SeedData;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -18,6 +21,18 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 var app = builder.Build();
+
+using (var scope = app.Services.CreateScope())
+{
+    var dbContext = scope.ServiceProvider.GetRequiredService<InventoryDbContext>();
+    dbContext.Database.Migrate();
+
+    if (!dbContext.Products.Any())
+    {
+        dbContext.Products.AddRange(InventorySeedData.GetSeedProducts());
+        dbContext.SaveChanges();
+    }
+}
 
 app.UseSwagger();
 app.UseSwaggerUI(options =>

@@ -30,7 +30,7 @@ public sealed class ReserveStockCommandHandler : IRequestHandler<ReserveStockCom
     }
 
     /// <summary>
-    /// Kiểm tra command, giữ tồn kho và lưu thay đổi.
+    /// Kiểm tra command, gọi repository reserve atomic để giữ tồn kho và trả DTO sau khi commit thành công.
     /// </summary>
     /// <param name="request">Yêu cầu giữ sản phẩm và số lượng.</param>
     /// <param name="cancellationToken">Token hủy request.</param>
@@ -41,14 +41,9 @@ public sealed class ReserveStockCommandHandler : IRequestHandler<ReserveStockCom
     {
         await _validator.ValidateAndThrowAsync(request, cancellationToken);
 
-        var product = await _repository.GetByIdAsync(ProductId.From(request.ProductId), cancellationToken);
-        if (product is null)
-        {
-            throw new ProductNotFoundException(request.ProductId);
-        }
-
-        product.Reserve(request.Quantity);
-        await _repository.SaveChangesAsync(cancellationToken);
+        // Logic đọc -> kiểm tra -> trừ kho -> lưu đã được đóng gói vào repository ReserveAsync.
+        // Ở đây handler chỉ cần invoke single atomic path để tránh race condition và giữ exception contract cũ.
+        var product = await _repository.ReserveAsync(ProductId.From(request.ProductId), request.Quantity, cancellationToken);
 
         return new ProductDto(
             product.Id.Value,
