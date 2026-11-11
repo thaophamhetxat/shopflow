@@ -66,7 +66,6 @@ public sealed class OrderRepository : IOrderRepository, IOrderReadModelRepositor
     {
         var order = await _dbContext.Orders
             .AsNoTracking()
-            .Include(currentOrder => currentOrder.Items)
             .FirstOrDefaultAsync(currentOrder => currentOrder.Id == id, cancellationToken);
 
         if (order is null)
@@ -74,7 +73,12 @@ public sealed class OrderRepository : IOrderRepository, IOrderReadModelRepositor
             return null;
         }
 
-        var items = order.Items.ToList();
+        var items = await _dbContext.Set<OrderItem>()
+            .AsNoTracking()
+            .Where(item => EF.Property<OrderId>(item, "OrderId") == id)
+            .OrderBy(item => item.ProductId)
+            .ToListAsync(cancellationToken);
+
         var mappedItems = items
             .Select(item => new OrderDetailItemDto(
                 item.ProductId,
@@ -84,8 +88,8 @@ public sealed class OrderRepository : IOrderRepository, IOrderReadModelRepositor
                 item.LineTotal.Amount))
             .ToList();
 
-        // Money được map thành chuỗi trong DB, `LineTotal` bị Ignore và `Status` ở DB là int nên các trường này không thể được project sang SQL tự nhiên.
-        // Vì vậy, order detail cần query đúng row chính của `orders` và `items` rồi map DTO trên CLR side để giữ thứ tự item thật của aggregate.
+        // Money được DB map thành chuỗi duy nhất `amount|currency`, `LineTotal` bị Ignore và `Status` map sang int nên không thể dịch `Total`/`LineTotal`/`ToString()` về SQL.
+        // Do đó phần map DTO còn lại phải làm ở memory sau khi query `orders` theo Id và `order_items` theo shadow key `OrderId` đã trả đủ dòng hàng.
         var totalAmount = items.Sum(item => item.LineTotal.Amount);
         var totalCurrency = items.Select(item => item.UnitPrice.Currency).FirstOrDefault() ?? string.Empty;
 
@@ -133,18 +137,27 @@ public sealed class OrderRepository : IOrderRepository, IOrderReadModelRepositor
 
         if (cursor is OrderId cursorOrderIdValue && cursorCreatedAt.HasValue)
         {
-            query = query.Where(currentOrder => currentOrder.CreatedAt < cursorCreatedAt.Value);
+            // SQL chỉ có thể so sánh `CreatedAt` theo keyset được; `Id.Value` là Guid bên trong value object `HasConversion` nên EF không dịch `Id.Value < ...` xuống SQL.
+            // Để tránh bỏ sót order khi nhiều đơn cùng `CreatedAt`, SQL lấy thừa 1 row và ta lọc tie-breaker ở bộ nhớ bằng `Guid.CompareTo` sau khi materialize.
+            query = query.Where(currentOrder => currentOrder.CreatedAt <= cursorCreatedAt.Value);
         }
 
         var matchedOrders = await query
             .OrderByDescending(currentOrder => currentOrder.CreatedAt)
             .ThenByDescending(currentOrder => currentOrder.Id)
-            .Take(boundedPageSize)
+            .Take(boundedPageSize + 1)
             .ToListAsync(cancellationToken);
 
-        // Cursor keyset và Take chỉ chạm tới các cột thường trong `orders` (`CustomerId`, `CreatedAt`, `Id`) nên EF Core dịch được sang SQL.
-        // `OrderId` là value object với converter Guid, nên so sánh `Id.Value` theo GUID trong SQL không được dịch; vì vậy giữ keyset theo `CreatedAt` và để map DTO ở memory sau khi SQL đã giới hạn đúng trang.
+        if (cursor is OrderId cursorOrderIdForMemory && cursorCreatedAt.HasValue)
+        {
+            matchedOrders = matchedOrders
+                .Where(currentOrder => currentOrder.CreatedAt < cursorCreatedAt.Value ||
+                    (currentOrder.CreatedAt == cursorCreatedAt.Value && currentOrder.Id.Value.CompareTo(cursorOrderIdForMemory.Value) < 0))
+                .ToList();
+        }
+
         return matchedOrders
+            .Take(boundedPageSize)
             .Select(currentOrder => new OrderSummaryDto(
                 currentOrder.Id.Value,
                 currentOrder.CustomerId.Value,

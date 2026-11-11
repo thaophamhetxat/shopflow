@@ -81,6 +81,8 @@ public sealed class ReadModelProjectionTests
                 var mediator = provider.GetRequiredService<IMediator>();
 
                 var customerId = Guid.NewGuid();
+                var firstProductId = Guid.NewGuid();
+                var secondProductId = Guid.NewGuid();
                 var orderId = await mediator.Send(new PlaceOrderCommand(
                     customerId,
                     "12 Lê Lợi",
@@ -89,8 +91,8 @@ public sealed class ReadModelProjectionTests
                     "100000",
                     new List<PlaceOrderItem>
                     {
-                        new(Guid.NewGuid(), 2, 25000m, "VND"),
-                        new(Guid.NewGuid(), 1, 15000m, "VND")
+                        new(firstProductId, 2, 25000m, "VND"),
+                        new(secondProductId, 1, 15000m, "VND")
                     },
                     idempotencyKey));
 
@@ -103,9 +105,14 @@ public sealed class ReadModelProjectionTests
                 Assert.Equal(65000m, detail.TotalAmount);
                 Assert.Equal("VND", detail.TotalCurrency);
                 Assert.Equal(2, detail.Items.Count);
-                Assert.Equal(2, detail.Items[0].Quantity);
-                Assert.Equal(25000m, detail.Items[0].UnitPriceAmount);
-                Assert.Equal(50000m, detail.Items[0].LineTotalAmount);
+                var firstItem = Assert.Single(detail.Items, item => item.ProductId == firstProductId);
+                Assert.Equal(2, firstItem.Quantity);
+                Assert.Equal(25000m, firstItem.UnitPriceAmount);
+                Assert.Equal(50000m, firstItem.LineTotalAmount);
+                var secondItem = Assert.Single(detail.Items, item => item.ProductId == secondProductId);
+                Assert.Equal(1, secondItem.Quantity);
+                Assert.Equal(15000m, secondItem.UnitPriceAmount);
+                Assert.Equal(15000m, secondItem.LineTotalAmount);
             }
             finally
             {
@@ -265,6 +272,74 @@ public sealed class ReadModelProjectionTests
                     .ToListAsync();
 
                 Assert.Equal(expectedOrderIdsFromDb, secondPage.Select(dto => dto.OrderId).ToList());
+            }
+            finally
+            {
+                await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
+                provider.Dispose();
+            }
+        }
+        finally
+        {
+            DatabaseLock.Release();
+        }
+    }
+
+    // Test này chứng minh Evidence Day 46 fix 3: khi 2 order cùng customer có cùng CreatedAt, keyset tie-breaker theo Id vẫn giữ đúng thứ tự trang sau và không bỏ sót đơn hàng.
+    [Fact]
+    public async Task ListOrdersByCustomer_ReturnsSecondPage_WhenOrdersShareCreatedAt()
+    {
+        await DatabaseLock.WaitAsync();
+        try
+        {
+            var provider = BuildServiceProvider();
+            var idempotencyKeys = Enumerable.Range(0, 2).Select(_ => $"tie-breaker-{Guid.NewGuid():N}").ToList();
+
+            try
+            {
+                await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
+                var mediator = provider.GetRequiredService<IMediator>();
+                var customerId = Guid.NewGuid();
+                var createdOrderIds = new List<Guid>();
+
+                foreach (var idempotencyKey in idempotencyKeys)
+                {
+                    var orderId = await mediator.Send(new PlaceOrderCommand(
+                        customerId,
+                        "Shared CreatedAt Street",
+                        "Hà Nội",
+                        "Việt Nam",
+                        "250000",
+                        new List<PlaceOrderItem>
+                        {
+                            new(Guid.NewGuid(), 1, 100m, "VND")
+                        },
+                        idempotencyKey));
+
+                    createdOrderIds.Add(orderId.Value);
+                }
+
+                var sharedCreatedAt = new DateTime(2024, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+                using (var scope = provider.CreateScope())
+                {
+                    var dbContext = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+                    foreach (var orderId in createdOrderIds)
+                    {
+                        await dbContext.Database.ExecuteSqlRawAsync(
+                            "UPDATE orders SET created_at = {0} WHERE id = {1}",
+                            sharedCreatedAt,
+                            orderId);
+                    }
+                }
+
+                var firstPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, null, 1));
+                Assert.Equal(1, firstPage.Count);
+
+                var secondPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, firstPage[0].OrderId, 1));
+                Assert.Equal(1, secondPage.Count);
+                Assert.NotEqual(firstPage[0].OrderId, secondPage[0].OrderId);
+                Assert.Contains(firstPage[0].OrderId, createdOrderIds);
+                Assert.Contains(secondPage[0].OrderId, createdOrderIds);
             }
             finally
             {

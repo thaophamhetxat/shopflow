@@ -31,7 +31,10 @@ public static class DependencyInjection
         ArgumentNullException.ThrowIfNull(services);
 
         services.AddLogging();
-        services.AddSingleton<IOrderRepository, InMemoryOrderRepository>();
+
+        var inMemoryOrderRepository = new InMemoryOrderRepository();
+        services.AddSingleton<IOrderRepository>(inMemoryOrderRepository);
+        services.AddSingleton<IOrderReadModelRepository>(inMemoryOrderRepository);
         services.AddSingleton<IIdempotencyStore, InMemoryIdempotencyStore>();
 
         foreach (var validatorType in typeof(DependencyInjection).Assembly
@@ -55,7 +58,7 @@ public static class DependencyInjection
         return services;
     }
 
-    private sealed class InMemoryOrderRepository : IOrderRepository
+    private sealed class InMemoryOrderRepository : IOrderRepository, IOrderReadModelRepository
     {
         private readonly ConcurrentDictionary<OrderId, Order> _orders = new();
 
