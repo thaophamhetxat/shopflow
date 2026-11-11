@@ -27,7 +27,7 @@ public sealed class IdempotencyIntegrationTests
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["ConnectionStrings:OrderDb"] = Environment.GetEnvironmentVariable("ConnectionStrings__OrderDb")
-                    ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=ShopFlow123!",
+                    ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=ShopFlow123!;",
                 ["ConnectionStrings:Redis"] = "localhost:6379"
             })
             .Build();
@@ -197,7 +197,7 @@ public sealed class IdempotencyIntegrationTests
                 },
                 "query-key"));
 
-            var dto = await mediator.Send(new GetOrderByIdQuery(orderId.Value));
+            OrderDetailDto? dto = await mediator.Send(new GetOrderByIdQuery(orderId.Value));
 
             Assert.NotNull(dto);
             Assert.Equal(orderId.Value, dto!.OrderId);
@@ -223,7 +223,7 @@ public sealed class IdempotencyIntegrationTests
             await ResetDatabaseAsync(provider);
             var mediator = provider.GetRequiredService<IMediator>();
 
-            var dto = await mediator.Send(new GetOrderByIdQuery(Guid.NewGuid()));
+            OrderDetailDto? dto = await mediator.Send(new GetOrderByIdQuery(Guid.NewGuid()));
 
             Assert.Null(dto);
         }
@@ -257,7 +257,7 @@ public sealed class IdempotencyIntegrationTests
                 "cancel-key"));
 
             await mediator.Send(new CancelOrderCommand(orderId.Value));
-            var dto = await mediator.Send(new GetOrderByIdQuery(orderId.Value));
+            OrderDetailDto? dto = await mediator.Send(new GetOrderByIdQuery(orderId.Value));
 
             Assert.NotNull(dto);
             Assert.Equal("Cancelled", dto!.Status);

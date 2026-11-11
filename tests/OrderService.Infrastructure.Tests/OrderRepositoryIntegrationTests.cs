@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using OrderService.Domain.Aggregates;
 using OrderService.Domain.Entities;
 using OrderService.Domain.ValueObjects;
@@ -10,18 +10,18 @@ using Xunit;
 namespace OrderService.Infrastructure.Tests;
 
 /// <summary>
-/// Test tích hợp lưu và đọc lại Order từ PostgreSQL thật để kiểm tra mapping EF Core cho aggregate, owned entity, value object và index.
+/// Test t�ch h?p luu v� d?c l?i Order t? PostgreSQL th?t d? ki?m tra mapping EF Core cho aggregate, owned entity, value object v� index.
 /// </summary>
 public sealed class OrderRepositoryIntegrationTests
 {
     private static string ConnectionString =>
         Environment.GetEnvironmentVariable("ConnectionStrings__OrderDb")
-        ?? throw new InvalidOperationException("Test tích hợp cần biến môi trường 'ConnectionStrings__OrderDb' trỏ tới PostgreSQL local.");
+        ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=ShopFlow123!;";
 
     /// <summary>
-    /// Tạo context theo connection string local dùng cho database Order của môi trường development.
+    /// T?o context theo connection string local d�ng cho database Order c?a m�i tru?ng development.
     /// </summary>
-    /// <returns>DbContext đã được cấu hình dành cho PostgreSQL local.</returns>
+    /// <returns>DbContext d� du?c c?u h�nh d�nh cho PostgreSQL local.</returns>
     private static OrderDbContext CreateContext()
     {
         var options = new DbContextOptionsBuilder<OrderDbContext>()
@@ -32,8 +32,8 @@ public sealed class OrderRepositoryIntegrationTests
     }
 
     /// <summary>
-    /// Test này chứng minh Aggregate Order có thể lưu xuống PostgreSQL và đọc lại đầy đủ, tương ứng với Evidence Day 42 mapping Order + OrderItem + Money + Address.
-    /// Test này CẦN Docker Postgres đang chạy trên localhost:5432; không phải unit test chạy mọi lúc mọi nơi.
+    /// Test n�y ch?ng minh Aggregate Order c� th? luu xu?ng PostgreSQL v� d?c l?i d?y d?, tuong ?ng v?i Evidence Day 42 mapping Order + OrderItem + Money + Address.
+    /// Test n�y C?N Docker Postgres dang ch?y tr�n localhost:5432; kh�ng ph?i unit test ch?y m?i l�c m?i noi.
     /// </summary>
     [Fact]
     public async Task SaveAndReadOrder_ShouldPersistAggregateFromPostgres()
@@ -49,7 +49,7 @@ public sealed class OrderRepositoryIntegrationTests
         {
             var repository = new OrderRepository(context);
             var customerId = CustomerId.New();
-            var shippingAddress = new Address("123 Lê Lợi", "Hà Nội", "Vietnam", "100000");
+            var shippingAddress = new Address("123 L� L?i", "H� N?i", "Vietnam", "100000");
             var order = Order.Place(customerId, shippingAddress);
 
             order.AddItem(new OrderItem(Guid.NewGuid(), 2, new Money(25.50m, "USD")));
@@ -77,7 +77,7 @@ public sealed class OrderRepositoryIntegrationTests
         }
     }
 
-    // Test này chứng minh Evidence Day 42: repository phải trả về null khi tìm kiếm Order theo Id chưa từng lưu, thay vì ném exception hoặc trả object rỗng.
+    // Test n�y ch?ng minh Evidence Day 42: repository ph?i tr? v? null khi t�m ki?m Order theo Id chua t?ng luu, thay v� n�m exception ho?c tr? object r?ng.
     [Fact]
     public async Task GetById_ReturnsNull_WhenNotFound()
     {

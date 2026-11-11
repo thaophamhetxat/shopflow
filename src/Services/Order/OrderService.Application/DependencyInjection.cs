@@ -8,6 +8,7 @@ using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using OrderService.Application.Behaviors;
 using OrderService.Application.Idempotency;
+using OrderService.Application.Queries;
 using OrderService.Domain.Aggregates;
 using OrderService.Domain.Repositories;
 using OrderService.Domain.ValueObjects;
@@ -67,6 +68,64 @@ public static class DependencyInjection
         public Task<Order?> GetByIdAsync(OrderId id, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(_orders.TryGetValue(id, out var order) ? order : null);
+        }
+
+        public Task<object?> GetOrderDetailAsync(OrderId id, CancellationToken cancellationToken = default)
+        {
+            var order = _orders.TryGetValue(id, out var foundOrder) ? foundOrder : null;
+            if (order is null)
+            {
+                return Task.FromResult<object?>(null);
+            }
+
+            return Task.FromResult<object?>(new OrderDetailDto(
+                order.Id.Value,
+                order.CustomerId.Value,
+                order.Status.ToString(),
+                order.Total.Amount,
+                order.Total.Currency,
+                order.CreatedAt,
+                order.Items.Select(item => new OrderDetailItemDto(
+                    item.ProductId,
+                    item.Quantity,
+                    item.UnitPrice.Amount,
+                    item.UnitPrice.Currency,
+                    item.LineTotal.Amount)).ToList()));
+        }
+
+        public Task<IReadOnlyList<object>> ListOrderSummariesByCustomerAsync(CustomerId customerId, OrderId? cursor, int pageSize, CancellationToken cancellationToken = default)
+        {
+            var items = _orders.Values
+                .Where(order => order.CustomerId == customerId)
+                .OrderByDescending(order => order.CreatedAt)
+                .ThenByDescending(order => order.Id)
+                .ToList();
+
+            if (cursor is OrderId cursorOrderId)
+            {
+                var cursorOrder = items.FirstOrDefault(order => order.Id == cursorOrderId);
+                if (cursorOrder is not null)
+                {
+                    items = items
+                        .Where(order => order.CreatedAt < cursorOrder.CreatedAt ||
+                            (order.CreatedAt == cursorOrder.CreatedAt && order.Id.Value < cursorOrderId.Value))
+                        .ToList();
+                }
+            }
+
+            var summaries = items
+                .Take(Math.Clamp(pageSize, 1, 50))
+                .Select(order => (object)new OrderSummaryDto(
+                    order.Id.Value,
+                    order.CustomerId.Value,
+                    order.Status.ToString(),
+                    order.Total.Amount,
+                    order.Total.Currency,
+                    order.Items.Count,
+                    order.CreatedAt))
+                .ToList();
+
+            return Task.FromResult<IReadOnlyList<object>>(summaries);
         }
 
         public Task SaveChangesAsync(CancellationToken cancellationToken = default)

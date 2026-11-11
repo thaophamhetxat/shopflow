@@ -25,7 +25,7 @@ public class MediatorResolutionTests
         var mediator = provider.GetRequiredService<IMediator>();
         var placeHandler = provider.GetRequiredService<IRequestHandler<PlaceOrderCommand, OrderId>>();
         var cancelHandler = provider.GetRequiredService<IRequestHandler<CancelOrderCommand>>();
-        var getByIdHandler = provider.GetRequiredService<IRequestHandler<GetOrderByIdQuery, OrderDto?>>();
+        var getByIdHandler = provider.GetRequiredService<IRequestHandler<GetOrderByIdQuery, OrderDetailDto?>>();
 
         Assert.NotNull(mediator);
         Assert.IsType<PlaceOrderCommandHandler>(placeHandler);
@@ -83,7 +83,7 @@ public class MediatorResolutionTests
 
         using var provider = services.BuildServiceProvider();
 
-        var handler = provider.GetRequiredService<IRequestHandler<GetOrderByIdQuery, OrderDto?>>();
+        var handler = provider.GetRequiredService<IRequestHandler<GetOrderByIdQuery, OrderDetailDto?>>();
 
         Assert.NotNull(handler);
         Assert.IsType<GetOrderByIdQueryHandler>(handler);

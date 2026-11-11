@@ -5,6 +5,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using OrderService.Application.Idempotency;
 using OrderService.Domain.Repositories;
 using OrderService.Infrastructure.Idempotency;
@@ -39,6 +40,8 @@ public static class DependencyInjection
             options.UseNpgsql(connectionString);
         });
 
+        services.RemoveAll<IOrderRepository>();
+        services.RemoveAll<IIdempotencyStore>();
         services.AddScoped<IOrderRepository, OrderRepository>();
         services.AddStackExchangeRedisCache(options => options.Configuration = "localhost:6379");
         services.AddScoped<IIdempotencyStore, RedisIdempotencyStore>();
@@ -71,6 +74,8 @@ public static class DependencyInjection
             options.UseNpgsql(connectionString);
         });
 
+        services.RemoveAll<IOrderRepository>();
+        services.RemoveAll<IIdempotencyStore>();
         services.AddStackExchangeRedisCache(options => options.Configuration = redisConnectionString);
         services.AddScoped<IOrderRepository, OrderRepository>();
         services.AddScoped<IIdempotencyStore, RedisIdempotencyStore>();

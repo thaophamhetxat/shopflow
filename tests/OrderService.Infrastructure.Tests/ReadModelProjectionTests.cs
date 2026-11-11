@@ -1,0 +1,269 @@
+// File này chứa test tích hợp cho Day 46: read model projection và keyset pagination cho OrderService.Infrastructure.
+// Tạo ở Day 46 để kiểm chứng `GetOrderById` và `ListOrdersByCustomer` chạy bằng projection SQL thật trên PostgreSQL local, không dùng mock hay OFFSET.
+// Ngày 47 sẽ dùng DTO này để phát triển endpoint API đọc dữ liệu order mà không lộ aggregate Domain ra ngoài.
+
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using OrderService.Application;
+using OrderService.Application.Commands;
+using OrderService.Application.Queries;
+using OrderService.Domain.ValueObjects;
+using OrderService.Infrastructure.Persistence;
+using Xunit;
+
+namespace OrderService.Infrastructure.Tests;
+
+/// <summary>
+/// Test tích hợp Day 46 chứng minh query đọc bằng projection và keyset pagination hoạt động trên PostgreSQL thật, cần Docker Postgres đang chạy ở localhost:5432.
+/// </summary>
+public sealed class ReadModelProjectionTests
+{
+    private static ServiceProvider BuildServiceProvider()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:OrderDb"] = Environment.GetEnvironmentVariable("ConnectionStrings__OrderDb")
+                    ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=ShopFlow123!;",
+                ["ConnectionStrings:Redis"] = "localhost:6379"
+            })
+            .Build();
+
+        var services = new ServiceCollection();
+        services.AddLogging(logging =>
+        {
+            logging.SetMinimumLevel(LogLevel.Information);
+            logging.AddFilter("Microsoft.EntityFrameworkCore.Database.Command", LogLevel.Information);
+        });
+        services.AddApplication();
+        services.AddInfrastructure(configuration);
+
+        return services.BuildServiceProvider();
+    }
+
+    private static async Task ResetDatabaseAsync(IServiceProvider provider, params string[] idempotencyKeys)
+    {
+        using var scope = provider.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+        var cache = scope.ServiceProvider.GetRequiredService<IDistributedCache>();
+
+        await dbContext.Database.MigrateAsync();
+        await dbContext.Database.ExecuteSqlRawAsync("DELETE FROM outbox_messages;");
+        await dbContext.Database.ExecuteSqlRawAsync("DELETE FROM order_items;");
+        await dbContext.Database.ExecuteSqlRawAsync("DELETE FROM orders;");
+
+        foreach (var key in idempotencyKeys.Where(key => !string.IsNullOrWhiteSpace(key)))
+        {
+            await cache.RemoveAsync($"order:idempotency:{key}");
+        }
+    }
+
+    // Test này chứng minh Evidence Day 46: GetOrderById query bằng projection trả về OrderDetailDto với đúng OrderId, Status, Total và item count khi order đã được lưu thật trong PostgreSQL.
+    [Fact]
+    public async Task GetOrderById_Projection_ReturnsDetailDto()
+    {
+        var provider = BuildServiceProvider();
+        var idempotencyKey = $"projection-detail-{Guid.NewGuid():N}";
+
+        try
+        {
+            await ResetDatabaseAsync(provider, idempotencyKey);
+            var mediator = provider.GetRequiredService<IMediator>();
+
+            var customerId = Guid.NewGuid();
+            var orderId = await mediator.Send(new PlaceOrderCommand(
+                customerId,
+                "12 Lê Lợi",
+                "Hà Nội",
+                "Việt Nam",
+                "100000",
+                new List<PlaceOrderItem>
+                {
+                    new(Guid.NewGuid(), 2, 25000m, "VND"),
+                    new(Guid.NewGuid(), 1, 15000m, "VND")
+                },
+                idempotencyKey));
+
+            var detail = await mediator.Send(new GetOrderByIdQuery(orderId.Value));
+
+            Assert.NotNull(detail);
+            Assert.Equal(orderId.Value, detail!.OrderId);
+            Assert.Equal(customerId, detail.CustomerId);
+            Assert.Equal("Pending", detail.Status);
+            Assert.Equal(65000m, detail.TotalAmount);
+            Assert.Equal("VND", detail.TotalCurrency);
+            Assert.Equal(2, detail.Items.Count);
+            Assert.Equal(2, detail.Items[0].Quantity);
+            Assert.Equal(25000m, detail.Items[0].UnitPriceAmount);
+            Assert.Equal(50000m, detail.Items[0].LineTotalAmount);
+        }
+        finally
+        {
+            await ResetDatabaseAsync(provider, idempotencyKey);
+            provider.Dispose();
+        }
+    }
+
+    // Test này chứng minh Evidence Day 46: GetOrderById query không tìm thấy đơn hàng thì trả null thay vì ném exception, giữ đúng behavior query read-only.
+    [Fact]
+    public async Task GetOrderById_Projection_ReturnsNull_WhenNotFound()
+    {
+        var provider = BuildServiceProvider();
+
+        try
+        {
+            await ResetDatabaseAsync(provider);
+            var mediator = provider.GetRequiredService<IMediator>();
+
+            var result = await mediator.Send(new GetOrderByIdQuery(Guid.NewGuid()));
+
+            Assert.Null(result);
+        }
+        finally
+        {
+            await ResetDatabaseAsync(provider);
+            provider.Dispose();
+        }
+    }
+
+    // Test này chứng minh Evidence Day 46: list order theo customer dùng keyset cursor trả đúng 2 item đầu tiên theo CreatedAt giảm dần rồi OrderId giảm dần và không trùng lặp.
+    [Fact]
+    public async Task ListOrders_Keyset_FirstPage_ReturnsPageSize_InOrder()
+    {
+        var provider = BuildServiceProvider();
+        var idempotencyKeys = Enumerable.Range(0, 5).Select(_ => $"page-one-{Guid.NewGuid():N}").ToList();
+
+        try
+        {
+            await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
+            var mediator = provider.GetRequiredService<IMediator>();
+            var customerId = Guid.NewGuid();
+            var expectedOrderIds = new List<Guid>();
+
+            for (var index = 0; index < 5; index++)
+            {
+                var orderId = await mediator.Send(new PlaceOrderCommand(
+                    customerId,
+                    $"{index + 1} Test Street",
+                    "Hà Nội",
+                    "Việt Nam",
+                    "100000",
+                    new List<PlaceOrderItem>
+                    {
+                        new(Guid.NewGuid(), 1, 100m + index, "USD")
+                    },
+                    idempotencyKeys[index]));
+
+                expectedOrderIds.Add(orderId.Value);
+                await Task.Delay(25);
+            }
+
+            var actualPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, null, 2));
+
+            using var scope = provider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+            var expectedOrderIdsFromDb = await dbContext.Orders
+                .Where(order => order.CustomerId == CustomerId.From(customerId))
+                .OrderByDescending(order => order.CreatedAt)
+                .ThenByDescending(order => order.Id)
+                .Select(order => order.Id.Value)
+                .Take(2)
+                .ToListAsync();
+
+            Assert.Equal(2, actualPage.Count);
+            Assert.Equal(expectedOrderIdsFromDb, actualPage.Select(dto => dto.OrderId).ToList());
+        }
+        finally
+        {
+            await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
+            provider.Dispose();
+        }
+    }
+
+    // Test này chứng minh Evidence Day 46: keyset trang thứ hai lấy đúng các order tiếp theo và không chồng lấn với trang đầu khi cursor là OrderId của item cuối cùng ở trang trước.
+    [Fact]
+    public async Task ListOrders_Keyset_SecondPage_ReturnsNextOrders_NoOverlap()
+    {
+        var provider = BuildServiceProvider();
+        var idempotencyKeys = Enumerable.Range(0, 5).Select(_ => $"page-two-{Guid.NewGuid():N}").ToList();
+
+        try
+        {
+            await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
+            var mediator = provider.GetRequiredService<IMediator>();
+            var customerId = Guid.NewGuid();
+            var createdOrderIds = new List<Guid>();
+
+            for (var index = 0; index < 5; index++)
+            {
+                var orderId = await mediator.Send(new PlaceOrderCommand(
+                    customerId,
+                    $"{index + 1} Cursor Street",
+                    "Đà Nẵng",
+                    "Việt Nam",
+                    "500000",
+                    new List<PlaceOrderItem>
+                    {
+                        new(Guid.NewGuid(), 1, 200m + index, "USD")
+                    },
+                    idempotencyKeys[index]));
+
+                createdOrderIds.Add(orderId.Value);
+                await Task.Delay(25);
+            }
+
+            var firstPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, null, 2));
+            var cursorOrderId = firstPage[^1].OrderId;
+            var secondPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, cursorOrderId, 2));
+
+            Assert.Equal(2, secondPage.Count);
+            Assert.Empty(firstPage.Select(dto => dto.OrderId).Intersect(secondPage.Select(dto => dto.OrderId)));
+
+            using var scope = provider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+            var expectedOrderIdsFromDb = await dbContext.Orders
+                .Where(order => order.CustomerId == CustomerId.From(customerId))
+                .OrderByDescending(order => order.CreatedAt)
+                .ThenByDescending(order => order.Id)
+                .Select(order => order.Id.Value)
+                .Skip(2)
+                .Take(2)
+                .ToListAsync();
+
+            Assert.Equal(expectedOrderIdsFromDb, secondPage.Select(dto => dto.OrderId).ToList());
+        }
+        finally
+        {
+            await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
+            provider.Dispose();
+        }
+    }
+
+    // Test này chứng minh Evidence Day 46: list order theo customer khi chưa có đơn nào phải trả list rỗng, không null và không ném exception.
+    [Fact]
+    public async Task ListOrders_NoOrders_ReturnsEmpty()
+    {
+        var provider = BuildServiceProvider();
+
+        try
+        {
+            await ResetDatabaseAsync(provider);
+            var mediator = provider.GetRequiredService<IMediator>();
+            var customerId = Guid.NewGuid();
+
+            var results = await mediator.Send(new ListOrdersByCustomerQuery(customerId, null, 20));
+
+            Assert.NotNull(results);
+            Assert.Empty(results);
+        }
+        finally
+        {
+            await ResetDatabaseAsync(provider);
+            provider.Dispose();
+        }
+    }
+}
