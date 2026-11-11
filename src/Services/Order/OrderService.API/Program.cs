@@ -8,6 +8,8 @@ using OrderService.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Đăng ký health-check services: MapHealthChecks("/health") ở dưới KHÔNG tự đăng ký service, thiếu dòng này thì app ném InvalidOperationException và chết ngay lúc khởi động (lỗi từ Day 47, Day 50 phát hiện ra).
+builder.Services.AddHealthChecks();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddEndpointsApiExplorer();
