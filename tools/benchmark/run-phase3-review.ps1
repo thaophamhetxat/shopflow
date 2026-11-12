@@ -363,9 +363,10 @@ if ($stockAfterCancellation -ne $stockBeforeCancellation) {
     throw "Stock không release đúng sau payment fail: trước $stockBeforeCancellation, sau $stockAfterCancellation."
 }
 
+# 20 la gioi han toi da cua loop; AttemptsRun la so lan thuc te da chay den khi gap Cancelled.
 $paymentFailRows.Add([pscustomobject]@{
     Phase = "PaymentFail"
-    TotalAttempts = 20
+    AttemptsRun = $attempt
     Confirmed = $confirmedCount
     Cancelled = $cancelledCount
     OrderId = $cancelledCase.OrderId
@@ -401,7 +402,7 @@ $lines.Add("Assert: 10/10 Cancelled; stock khong doi sau 10 lan reserve fail.")
 $lines.Add("")
 $lines.Add("Muc C: payment fail quan sat duoc")
 foreach ($paymentRow in $paymentFailRows) {
-    $lines.Add("TotalAttempts=$($paymentRow.TotalAttempts); Confirmed=$($paymentRow.Confirmed); Cancelled=$($paymentRow.Cancelled); OrderId=$($paymentRow.OrderId); SagaState=$($paymentRow.SagaState); StockBefore=$($paymentRow.StockBefore); StockAfter=$($paymentRow.StockAfter)")
+    $lines.Add("AttemptsRun=$($paymentRow.AttemptsRun); Confirmed=$($paymentRow.Confirmed); Cancelled=$($paymentRow.Cancelled); OrderId=$($paymentRow.OrderId); SagaState=$($paymentRow.SagaState); StockBefore=$($paymentRow.StockBefore); StockAfter=$($paymentRow.StockAfter)")
 }
 $lines.Add("Assert: co it nhat 1 truong hop Cancelled do payment fail, stock da release dung bang truoc khi dat don, saga_state = FailedPayment.")
 
