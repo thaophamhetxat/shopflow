@@ -224,3 +224,20 @@ Các thiết kế đã kiểm chứng:
 - Pool tuning: `ConnectionStrings:InventoryDb` trong API có `Maximum Pool Size=20` và `Minimum Pool Size=5`.
 
 Phần cải thiện đo được trên warm cache là nhỏ vì cả Redis và PostgreSQL đều chạy local trên cùng máy, nên sự chênh lệch chủ yếu nằm ở phần giảm dao động latency sau khi cache đủ nóng và không phải đọc database lặp lại ở từng request. Về kỹ thuật, cache chỉ là layer tối ưu hóa; mọi correctness vẫn nghiêng về dữ liệu sống trên PostgreSQL.
+
+## Day 63 — transaction isolation and regression guard tests
+
+`ProductRepository.ReserveAsync` now requests `IsolationLevel.Serializable`. The new EF Core transaction interceptor observed `Serializable` when the reservation transaction started, and the focused isolation guard passed. The existing concurrent reservation test did **not** pass under this isolation level: PostgreSQL returned `40001: could not serialize access due to concurrent update` before all ten requests could be classified as five successful and five domain failures. No serialization retry was added; this remains an issue to analyze.
+
+The two performance guards passed, measuring average latency across repeated calls on PostgreSQL at `2026-11-12 18:27:21 +07:00`:
+
+| Guard | Threshold | Iterations | Measured average (ms) | Result |
+|---|---:|---:|---:|---|
+| `CheckStockAsync` | <200 ms | 1,000 | 2.501 | PASS |
+| `GetOrderDetailAsync` | <50 ms | 200 | 3.160 | PASS |
+
+The thresholds leave headroom over the existing Day 61 measurements (approximately 1.4–2.0 ms for stock check and 2.6–3.4 ms for order detail), so normal local timing variation should not trip the guards while a substantial regression can.
+
+The focused Day 63 tests passed (3/3). The full solution run did not pass: besides the `40001` concurrent-reservation failure, two saga integration assertions and one outbox pipeline timeout failed. These failures are recorded for analysis; no retry or changes to the existing tests were made.
+
+See [`efcore-playbook.md`](efcore-playbook.md) for the 10 EF Core practices recorded for this project.

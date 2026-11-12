@@ -3,6 +3,7 @@
 // Gateway Day 49 và Saga Day 52 sẽ truy cập tồn kho qua hợp đồng repository này.
 // Day 61 biên dịch stock-check query; Reserve vẫn giữ transaction và SELECT FOR UPDATE như trước.
 
+using System.Data;
 using InventoryService.Application;
 using InventoryService.Domain.Aggregates;
 using InventoryService.Domain.Repositories;
@@ -69,7 +70,9 @@ public sealed class ProductRepository : IProductRepository
     /// <exception cref="InventoryDomainException">Ném khi số lượng không hợp lệ hoặc kho không đủ; exception này được giữ nguyên theo domain rule.</exception>
     public async Task<Product> ReserveAsync(ProductId id, int quantity, CancellationToken cancellationToken = default)
     {
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+        // Day 63 yêu cầu serializable cho reservation để khóa toàn bộ phạm vi đọc-modify-write dưới cùng một isolation level.
+        // Với PostgreSQL, `SELECT ... FOR UPDATE` chỉ chịu hiệu lực nếu transaction được mở với isolation level đủ chặt để chặn write skew giữa các request cùng reserve một SKU.
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
 
         try
         {
