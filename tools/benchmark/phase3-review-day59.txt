@@ -1,0 +1,41 @@
+﻿Day 59 - review Phase 3 (sau Saga)
+Thoi diem chay: 2026-11-12 07:53:10 +07:00
+
+Khoi dong API: Order http://localhost:5181, Inventory http://localhost:5140, Payment http://localhost:5199
+Kiem tra health: 3/3 tra 200.
+
+Muc B: happy path 10 lan
+| STT | orderId | ConfirmedAfter(s) | stockBefore | stockAfter |
+| --- | --- | ---: | ---: | ---: |
+| 1 | 4780578b-06fe-47db-be3a-28410916c8c2 | 4.15 | 87 | 86 |
+| 2 | 68d74d1c-9e6a-4bb8-a76a-04e3d162e484 | 4.63 | 86 | 85 |
+| 3 | 428b1ae7-08f7-424a-8baa-aa3564d9a5f2 | 5.17 | 85 | 84 |
+| 4 | b07f2208-ec10-4b8e-9660-2508be3994a3 | 5.15 | 84 | 83 |
+| 5 | ae1e9d27-cc58-4dd3-a153-9d1f014a438d | 4.64 | 83 | 82 |
+| 6 | 3f5a5b08-23ae-4bb2-b661-977e436f0c4c | 5.16 | 82 | 81 |
+| 7 | 1dac4f48-aea6-401f-ba59-424ac5b705d9 | 5.2 | 81 | 80 |
+| 8 | 0951f46d-2b19-4b38-bc4e-24c45118260e | 3.61 | 80 | 79 |
+| 9 | 9ef1d221-0188-4dc7-b5ff-692b070e98bd | 5.15 | 79 | 78 |
+| 10 | 5a9e6aee-b8e5-401e-9065-8b52fd5955cc | 5.16 | 78 | 77 |
+
+Assert: 10/10 Confirmed; stock giam dung 10 so voi truoc khi chay happy path.
+
+Muc C: compensation do het hang 10 lan
+| STT | orderId | CancelledAfter(s) | stockBefore | stockAfter |
+| --- | --- | ---: | ---: | ---: |
+| 1 | c9d36737-d8e8-4564-aef2-dc0fc77f87ec | 4.64 | 77 | 77 |
+| 2 | ff2064e9-c931-47ea-9870-bcff44637da4 | 5.16 | 77 | 77 |
+| 3 | bb29f2aa-ef9f-4b6e-a804-5eb6e4703cd2 | 5.15 | 77 | 77 |
+| 4 | 55afa541-8816-401b-abb5-f650dff393bd | 4.64 | 77 | 77 |
+| 5 | 7a42f167-df17-4069-8dec-04d02bf68736 | 5.15 | 77 | 77 |
+| 6 | c64ba465-e5a3-4019-8454-4169c7e3c509 | 5.14 | 77 | 77 |
+| 7 | b71ee0f9-5dbb-4c35-b0cf-77f17e97e3fc | 4.64 | 77 | 77 |
+| 8 | e69b5b12-d619-4c1a-857a-a85b81753a68 | 5.15 | 77 | 77 |
+| 9 | 78371a94-0ce5-42a5-802a-32517922b50b | 5.16 | 77 | 77 |
+| 10 | 27335730-96fd-4211-802a-b21ad1b8fb7d | 4.65 | 77 | 77 |
+
+Assert: 10/10 Cancelled; stock khong doi sau 10 lan reserve fail.
+
+Muc C: payment fail quan sat duoc
+TotalAttempts=20; Confirmed=0; Cancelled=1; OrderId=15a2f10f-9cbc-4a04-9246-98cb14f3b622; SagaState=FailedPayment; StockBefore=77; StockAfter=77
+Assert: co it nhat 1 truong hop Cancelled do payment fail, stock da release dung bang truoc khi dat don, saga_state = FailedPayment.

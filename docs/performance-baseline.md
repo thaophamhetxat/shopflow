@@ -40,3 +40,20 @@ Log console EF Core ở mức Information được đối chiếu bằng cách g
 Không sửa các vấn đề SQL trong Day 51; việc tối ưu query thuộc phạm vi Day 60. Các kết luận trên phản ánh log thật, không thay thế cho việc kiểm tra lại sau khi working tree được làm sạch.
 
 Baseline này là mốc để so sánh sau tuning ở Day 59 và khi load test ở Day 66. Không dùng các số này để kết luận API nhanh/chậm một cách tuyệt đối.
+
+## Review Phase 3 — Day 59 (clean tree, live saga validation)
+
+Lần chạy Day 59 được thực hiện trên repo ở trạng thái clean-tree (`HEAD ccaa4ee`) với script [`tools/benchmark/run-phase3-review.ps1`](../tools/benchmark/run-phase3-review.ps1) và kết quả thực thi lưu ở [`tools/benchmark/phase3-review-day59.txt`](../tools/benchmark/phase3-review-day59.txt).
+
+### Kết quả thực tế
+
+- Kiểm tra health: 3/3 API trả `200` (`Order`, `Inventory`, `Payment`).
+- Happy path: 10/10 đơn đạt `Confirmed` trong vòng ~3.6–5.2 giây; stock giảm đúng 10 đơn từ 87 xuống 77.
+- Compensation do hết hàng: 10/10 đơn đạt `Cancelled`; stock không đổi sau 10 lần reserve fail.
+- Payment fail quan sát được: 1 đơn `Cancelled`, `saga_state = FailedPayment`, stock không đổi sau khi release, xác nhận luồng compensation hoạt động như mong đợi.
+
+### Kết luận so sánh
+
+- Day 51 là số liệu lịch sử, ghi trên working tree chưa sạch, nên vẫn giữ làm tài liệu tham khảo và cảnh báo rõ ràng.
+- Day 59 là chứng cứ review cuối cùng trên clean tree, đáp ứng tiêu chí kiểm thử saga: happy path thành công, compensation hết hàng thành công, payment fail tới `FailedPayment` và release stock đúng.
+- Vì mục tiêu của Day 59 là review/stability pass, không có thay đổi business logic mới hay feature work mới; chỉ cập nhật baseline và lưu lại evidence thực thi.
