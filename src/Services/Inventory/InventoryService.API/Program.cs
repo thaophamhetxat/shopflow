@@ -8,12 +8,14 @@ using InventoryService.Infrastructure.Persistence;
 using InventoryService.Infrastructure.Persistence.SeedData;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
+using ShopFlow.BuildingBlocks;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddHealthChecks();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
+builder.Services.AddShopFlowTracing(builder.Configuration, "shopflow-inventory");
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {

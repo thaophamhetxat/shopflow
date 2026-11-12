@@ -10,6 +10,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using OrderService.Application.Sagas;
 using OrderService.Infrastructure.Persistence;
+using ShopFlow.BuildingBlocks;
 
 namespace OrderService.Infrastructure.Outbox;
 
@@ -314,6 +315,8 @@ public sealed class OutboxProcessor : BackgroundService
 
     private async Task<bool> PublishAsync(OutboxMessage message, CancellationToken stoppingToken)
     {
+        using var logScope = ShopFlowActivitySource.BeginLogScope(_logger);
+
         try
         {
             await using var scope = _scopeFactory.CreateAsyncScope();
@@ -327,22 +330,30 @@ public sealed class OutboxProcessor : BackgroundService
                 return false;
             }
 
-            // Đẩy message to broker trước khi trigger saga và set ProcessedAt: nếu broker lỗi, message vẫn còn ở DB và sẽ được poll lại sau.
-            // Cách này đảm bảo at-least-once: không có message nào mất chỉ vì publish broker tạm thời down.
-            await _publisher.PublishAsync(persistedMessage, stoppingToken);
-
-            if (persistedMessage.EventType.EndsWith("OrderPlacedEvent", StringComparison.Ordinal))
+            using (var activity = ShopFlowActivitySource.Source.StartActivity(ShopFlowActivitySource.OutboxProcess))
             {
-                var orderSaga = scope.ServiceProvider.GetService<IOrderSaga>();
-                if (orderSaga is not null && Guid.TryParse(persistedMessage.AggregateId, out var orderId))
+                // Span này là root span vì trace context của request gốc không được lưu trong outbox_messages; schema Day 64 không đổi nên không có traceparent row.
+                // Khi message bị publish từ hàng đợi sau nhiều phút, ta không thể nối trace về POST gốc ban đầu, nên span phải đứng độc lập ở đầu xử lý mỗi message.
+                activity?.SetTag("outbox.message_id", persistedMessage.Id.ToString());
+                activity?.SetTag("outbox.event_type", persistedMessage.EventType);
+
+                // Đẩy message to broker trước khi trigger saga và set ProcessedAt: nếu broker lỗi, message vẫn còn ở DB và sẽ được poll lại sau.
+                // Cách này đảm bảo at-least-once: không có message nào mất chỉ vì publish broker tạm thời down.
+                await _publisher.PublishAsync(persistedMessage, stoppingToken);
+
+                if (persistedMessage.EventType.EndsWith("OrderPlacedEvent", StringComparison.Ordinal))
                 {
-                    await orderSaga.RunAsync(orderId, stoppingToken);
-                }
-                else if (orderSaga is null)
-                {
-                    _logger.LogDebug(
-                        "Bỏ qua trigger OrderSaga cho {EventType} vì không có IOrderSaga được đăng ký trong container.",
-                        persistedMessage.EventType);
+                    var orderSaga = scope.ServiceProvider.GetService<IOrderSaga>();
+                    if (orderSaga is not null && Guid.TryParse(persistedMessage.AggregateId, out var orderId))
+                    {
+                        await orderSaga.RunAsync(orderId, stoppingToken);
+                    }
+                    else if (orderSaga is null)
+                    {
+                        _logger.LogDebug(
+                            "Bỏ qua trigger OrderSaga cho {EventType} vì không có IOrderSaga được đăng ký trong container.",
+                            persistedMessage.EventType);
+                    }
                 }
             }
 

@@ -9,6 +9,7 @@ using OrderService.Domain.Enums;
 using OrderService.Domain.Exceptions;
 using OrderService.Domain.Repositories;
 using OrderService.Domain.ValueObjects;
+using ShopFlow.BuildingBlocks;
 
 namespace OrderService.Application.Sagas;
 
@@ -79,6 +80,8 @@ public sealed class OrderSaga : IOrderSaga
     /// <returns>Task hoàn tất sau khi order đạt trạng thái đã xử lý hoặc dừng ở failed state.</returns>
     public async Task RunAsync(Guid orderId, CancellationToken cancellationToken = default)
     {
+        using var logScope = ShopFlowActivitySource.BeginLogScope(_logger);
+
         var persistedOrder = await _orderRepository.GetByIdAsync(OrderId.From(orderId), cancellationToken);
         if (persistedOrder is null)
         {
@@ -163,33 +166,42 @@ public sealed class OrderSaga : IOrderSaga
             {
                 _logger.LogInformation("Saga {OrderId} bắt đầu Reserve kho cho {ItemCount} item.", orderId, persistedOrder.Items.Count);
 
-                foreach (var item in persistedOrder.Items)
+                using (var activity = ShopFlowActivitySource.Source.StartActivity(ShopFlowActivitySource.SagaStepReserve))
                 {
-                    var existingReservation = await _sagaReservationRepository.GetByOrderIdAndProductIdAsync(orderId, item.ProductId, cancellationToken);
-                    if (existingReservation is not null && existingReservation.Status == SagaReservationStatus.Reserved)
-                    {
-                        _logger.LogInformation("Saga {OrderId} bỏ qua product {ProductId} vì item này đã reserve từ lần chạy trước.", orderId, item.ProductId);
-                        continue;
-                    }
+                    // Span này bao cả vòng reserve của saga để chứng minh từng item đã được reserve đúng bước và có thể liên kết với inventory service qua HttpClient trace.
+                    activity?.SetTag("order.id", persistedOrder.Id.Value.ToString());
+                    activity?.SetTag("item.count", persistedOrder.Items.Count.ToString());
 
-                    if (existingReservation is not null && existingReservation.Status == SagaReservationStatus.Released)
+                    foreach (var item in persistedOrder.Items)
                     {
-                        _logger.LogInformation("Saga {OrderId} bỏ qua product {ProductId} vì item này đã release trong compensation trước đó.", orderId, item.ProductId);
-                        continue;
-                    }
+                        activity?.SetTag("product.id", item.ProductId.ToString());
 
-                    var reserved = await _inventoryClient.ReserveAsync(item.ProductId, item.Quantity, cancellationToken);
-                    if (!reserved)
-                    {
-                        phase = SagaStateStatus.FailedInventory;
-                        var errorMessage = $"Reserve failed for product {item.ProductId}.";
-                        await CompensateAsync(persistedOrder, cancellationToken);
-                        await _sagaStateRepository.UpsertAsync(orderId, SagaStateStatus.FailedInventory, errorMessage: errorMessage, cancellationToken: cancellationToken);
-                        _logger.LogWarning("Saga {OrderId} dừng ở FailedInventory do reserve sản phẩm {ProductId} thất bại: {ErrorMessage}.", orderId, item.ProductId, errorMessage);
-                        return;
-                    }
+                        var existingReservation = await _sagaReservationRepository.GetByOrderIdAndProductIdAsync(orderId, item.ProductId, cancellationToken);
+                        if (existingReservation is not null && existingReservation.Status == SagaReservationStatus.Reserved)
+                        {
+                            _logger.LogInformation("Saga {OrderId} bỏ qua product {ProductId} vì item này đã reserve từ lần chạy trước.", orderId, item.ProductId);
+                            continue;
+                        }
 
-                    await _sagaReservationRepository.UpsertAsync(orderId, item.ProductId, item.Quantity, cancellationToken);
+                        if (existingReservation is not null && existingReservation.Status == SagaReservationStatus.Released)
+                        {
+                            _logger.LogInformation("Saga {OrderId} bỏ qua product {ProductId} vì item này đã release trong compensation trước đó.", orderId, item.ProductId);
+                            continue;
+                        }
+
+                        var reserved = await _inventoryClient.ReserveAsync(item.ProductId, item.Quantity, cancellationToken);
+                        if (!reserved)
+                        {
+                            phase = SagaStateStatus.FailedInventory;
+                            var errorMessage = $"Reserve failed for product {item.ProductId}.";
+                            await CompensateAsync(persistedOrder, cancellationToken);
+                            await _sagaStateRepository.UpsertAsync(orderId, SagaStateStatus.FailedInventory, errorMessage: errorMessage, cancellationToken: cancellationToken);
+                            _logger.LogWarning("Saga {OrderId} dừng ở FailedInventory do reserve sản phẩm {ProductId} thất bại: {ErrorMessage}.", orderId, item.ProductId, errorMessage);
+                            return;
+                        }
+
+                        await _sagaReservationRepository.UpsertAsync(orderId, item.ProductId, item.Quantity, cancellationToken);
+                    }
                 }
 
                 await _sagaStateRepository.UpsertAsync(orderId, SagaStateStatus.PendingPayment, cancellationToken: cancellationToken);
@@ -204,19 +216,27 @@ public sealed class OrderSaga : IOrderSaga
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 timeoutCts.CancelAfter(_sagaTimeout);
 
-                var chargeResult = await _paymentClient.ChargeAsync(
-                    persistedOrder.Id.Value,
-                    persistedOrder.Total.Amount,
-                    persistedOrder.Total.Currency,
-                    timeoutCts.Token);
-
-                if (chargeResult is null || !string.Equals(chargeResult.Status, "Succeeded", StringComparison.OrdinalIgnoreCase))
+                using (var activity = ShopFlowActivitySource.Source.StartActivity(ShopFlowActivitySource.SagaStepPayment))
                 {
-                    var errorMessage = $"Payment status was {chargeResult?.Status ?? "Unknown"}.";
-                    await CompensateAsync(persistedOrder, cancellationToken);
-                    await _sagaStateRepository.UpsertAsync(orderId, SagaStateStatus.FailedPayment, errorMessage: errorMessage, cancellationToken: cancellationToken);
-                    _logger.LogWarning("Saga {OrderId} dừng ở FailedPayment vì PaymentStatus={Status}.", orderId, chargeResult?.Status ?? "Unknown");
-                    return;
+                    // Span này bọc bước charge của saga để chứng minh luồng payment thật đang chạy trong một trace và tag cả order id lẫn amount/currency.
+                    activity?.SetTag("order.id", persistedOrder.Id.Value.ToString());
+                    activity?.SetTag("payment.amount", persistedOrder.Total.Amount.ToString());
+                    activity?.SetTag("payment.currency", persistedOrder.Total.Currency);
+
+                    var chargeResult = await _paymentClient.ChargeAsync(
+                        persistedOrder.Id.Value,
+                        persistedOrder.Total.Amount,
+                        persistedOrder.Total.Currency,
+                        timeoutCts.Token);
+
+                    if (chargeResult is null || !string.Equals(chargeResult.Status, "Succeeded", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var errorMessage = $"Payment status was {chargeResult?.Status ?? "Unknown"}.";
+                        await CompensateAsync(persistedOrder, cancellationToken);
+                        await _sagaStateRepository.UpsertAsync(orderId, SagaStateStatus.FailedPayment, errorMessage: errorMessage, cancellationToken: cancellationToken);
+                        _logger.LogWarning("Saga {OrderId} dừng ở FailedPayment vì PaymentStatus={Status}.", orderId, chargeResult?.Status ?? "Unknown");
+                        return;
+                    }
                 }
 
                 persistedOrder.Confirm();

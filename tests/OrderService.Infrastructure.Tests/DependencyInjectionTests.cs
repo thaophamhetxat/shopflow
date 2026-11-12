@@ -70,7 +70,7 @@ public sealed class DependencyInjectionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        var connectionString = "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=shopflow;";
+        var connectionString = "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=shopflow123;";
         services.AddInfrastructure(connectionString);
 
         using var provider = services.BuildServiceProvider();
@@ -85,7 +85,7 @@ public sealed class DependencyInjectionTests
         return new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["ConnectionStrings:OrderDb"] = "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=shopflow;",
+                ["ConnectionStrings:OrderDb"] = "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=shopflow123;",
                 ["ConnectionStrings:Redis"] = "localhost:6379"
             })
             .Build();

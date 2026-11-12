@@ -31,7 +31,7 @@ public sealed class PerformanceRegressionGuardTests
 
     private static string ConnectionString =>
         Environment.GetEnvironmentVariable("ConnectionStrings__OrderDb")
-        ?? throw new InvalidOperationException("Set 'ConnectionStrings__OrderDb' to run order performance guards.");
+        ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=shopflow123;";
 
     private static OrderDbContext CreateContext()
     {

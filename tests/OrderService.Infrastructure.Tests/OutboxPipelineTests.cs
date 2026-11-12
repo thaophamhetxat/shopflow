@@ -4,6 +4,7 @@
 // Day 61 xác nhận nhiều ProcessedAt được flush trong đúng một bulk UPDATE.
 
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -107,7 +108,7 @@ public sealed class OutboxPipelineTests
 
     private static string ConnectionString =>
         Environment.GetEnvironmentVariable("ConnectionStrings__OrderDb")
-        ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=shopflow;Include Error Detail=true;";
+        ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=shopflow123;Include Error Detail=true;";
 
     private static OrderDbContext CreateContext()
     {
@@ -161,6 +162,64 @@ public sealed class OutboxPipelineTests
     private static async Task WaitForPublishedCountAsync(FakeOutboxPublisher publisher, int expected, TimeSpan timeout)
     {
         await WaitForConditionAsync(() => publisher.PublishedMessages.Count >= expected, timeout);
+    }
+
+    /// <summary>
+    /// Test này chứng minh Evidence Day 64: ActivityListener bắt được span `outbox.process` khi processor xử lý một message từ bảng outbox.
+    /// </summary>
+    [Fact]
+    public async Task OutboxProcessor_StartsOutboxProcessSpan()
+    {
+        var spans = new List<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == "ShopFlow",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activity => spans.Add(activity)
+        };
+
+        ActivitySource.AddActivityListener(listener);
+
+        await DatabaseLock.WaitAsync();
+        try
+        {
+            await using var context = CreateContext();
+            await context.Database.MigrateAsync();
+            await ClearOutboxAsync(context);
+
+            var message = new OutboxMessage
+            {
+                Id = Guid.NewGuid(),
+                AggregateType = "Order",
+                AggregateId = Guid.NewGuid().ToString(),
+                EventType = "OrderService.Domain.Events.OrderPlacedEvent",
+                EventData = "{\"orderId\":\"test\"}",
+                OccurredOn = DateTime.UtcNow
+            };
+
+            context.OutboxMessages.Add(message);
+            await context.SaveChangesAsync();
+
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddDbContext<OrderDbContext>(options => options.UseNpgsql(ConnectionString));
+            using var provider = services.BuildServiceProvider();
+            var processor = new OutboxProcessor(
+                provider.GetRequiredService<IServiceScopeFactory>(),
+                new FakeOutboxPublisher(),
+                provider.GetRequiredService<ILogger<OutboxProcessor>>());
+
+            await processor.ProcessPendingAsync();
+
+            var span = Assert.Single(spans.Where(activity => activity.OperationName == "outbox.process"));
+            Assert.Equal(message.Id.ToString(), span.Tags.First(tag => tag.Key == "outbox.message_id").Value.ToString());
+            Assert.Equal(message.EventType, span.Tags.First(tag => tag.Key == "outbox.event_type").Value.ToString());
+            Assert.NotEqual(default, span.TraceId);
+        }
+        finally
+        {
+            DatabaseLock.Release();
+        }
     }
 
     /// <summary>

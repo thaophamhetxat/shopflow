@@ -2,6 +2,7 @@
 // Layer Application dùng fake repository/client để mô phỏng từng bước mà không cần chạy Inventory/Payment thật, đủ để chứng minh logic điều phối của `OrderSaga`.
 // Day 61 cập nhật fake read-model repository theo signature cursor `(CreatedAt, OrderId)`.
 
+using System.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderService.Application.Queries;
 using OrderService.Application.Sagas;
@@ -128,6 +129,38 @@ public sealed class OrderSagaTests
         Assert.Equal(OrderStatus.Confirmed, order.Status);
         Assert.Equal(SagaStateStatus.Completed.ToString(), sagaStateRepository.GetState(order.Id.Value));
         Assert.Equal(new[] { order.Items[1].ProductId }, inventoryClient.ReserveCalls);
+    }
+
+    // Test này chứng minh Evidence Day 64: ActivityListener bắt được span reserve/payment của saga khi order chạy qua state machine.
+    [Fact]
+    public async Task Saga_ReserveStep_StartsSpan()
+    {
+        var spans = new List<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == "ShopFlow",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activity => spans.Add(activity)
+        };
+
+        ActivitySource.AddActivityListener(listener);
+
+        var order = CreateOrderWithSingleItem();
+        var repository = new FakeOrderRepository(order);
+        var sagaStateRepository = new FakeSagaStateRepository();
+        var inventoryClient = new FakeInventoryClient(new Dictionary<Guid, bool> { [order.Items[0].ProductId] = true });
+        var paymentClient = new FakePaymentClient(true);
+        var saga = new OrderSaga(repository, sagaStateRepository, inventoryClient, paymentClient, NullLogger<OrderSaga>.Instance);
+
+        await saga.RunAsync(order.Id.Value);
+
+        Assert.Contains(spans, activity => activity.OperationName == "saga.step.reserve");
+        Assert.Contains(spans, activity => activity.OperationName == "saga.step.payment");
+        var reserveSpan = Assert.Single(spans.Where(activity => activity.OperationName == "saga.step.reserve"));
+        Assert.Equal(order.Id.Value.ToString(), reserveSpan.Tags.First(tag => tag.Key == "order.id").Value.ToString());
+        var paymentSpan = Assert.Single(spans.Where(activity => activity.OperationName == "saga.step.payment"));
+        Assert.Equal(order.Id.Value.ToString(), paymentSpan.Tags.First(tag => tag.Key == "order.id").Value.ToString());
+        Assert.Equal(order.Total.Amount.ToString(), paymentSpan.Tags.First(tag => tag.Key == "payment.amount").Value.ToString());
     }
 
     // Test này chứng minh Evidence Day 53: timeout 30s phải compensation và đánh dấu FailedPayment với errorMessage chứa timeout.

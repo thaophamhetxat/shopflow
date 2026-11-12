@@ -23,7 +23,7 @@ public sealed class ConcurrentReserveTests
 
     private static string ConnectionString =>
         Environment.GetEnvironmentVariable("ConnectionStrings__InventoryDb")
-        ?? "Host=localhost;Port=5432;Database=shopflow_inventory;Username=shopflow;Password=shopflow;";
+        ?? "Host=localhost;Port=5432;Database=shopflow_inventory;Username=shopflow;Password=shopflow123;";
 
     private static InventoryDbContext CreateContext()
     {

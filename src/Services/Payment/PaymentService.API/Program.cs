@@ -5,12 +5,14 @@ using Microsoft.OpenApi.Models;
 using PaymentService.API.Endpoints;
 using PaymentService.Application;
 using PaymentService.Infrastructure;
+using ShopFlow.BuildingBlocks;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddHealthChecks();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
+builder.Services.AddShopFlowTracing(builder.Configuration, "shopflow-payment");
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {

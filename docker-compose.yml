@@ -66,6 +66,16 @@ services:
     # Restart nếu RabbitMQ báo lỗi để không ngắt quá trình development cục bộ.
     restart: unless-stopped
 
+  jaeger:
+    # Jaeger all-in-one phục vụ Day 64 cho export span OTLP từ 3 API local chạy bằng dotnet run trên host.
+    image: jaegertracing/all-in-one:latest
+    container_name: shopflow-jaeger
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    restart: unless-stopped
+
   shopflow-gateway:
     # Gateway YARP này chỉ cần port 5000 cho client và không giữ database hay state trong container.
     build:

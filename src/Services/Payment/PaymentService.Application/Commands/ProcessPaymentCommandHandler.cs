@@ -9,6 +9,7 @@ using PaymentService.Application.Queries;
 using PaymentService.Domain.Aggregates;
 using PaymentService.Domain.Repositories;
 using PaymentService.Domain.ValueObjects;
+using ShopFlow.BuildingBlocks;
 
 namespace PaymentService.Application.Commands;
 
@@ -46,6 +47,11 @@ public sealed class ProcessPaymentCommandHandler : IRequestHandler<ProcessPaymen
     /// <exception cref="ValidationException">Ném khi dữ liệu đầu vào không hợp lệ.</exception>
     public async Task<PaymentDto> Handle(ProcessPaymentCommand request, CancellationToken cancellationToken)
     {
+        using var activity = ShopFlowActivitySource.Source.StartActivity(ShopFlowActivitySource.PaymentProcess);
+        activity?.SetTag("payment.amount", request.Amount.ToString());
+        activity?.SetTag("payment.currency", request.Currency);
+        activity?.SetTag("order.id", request.OrderId.ToString());
+
         await _validator.ValidateAndThrowAsync(request, cancellationToken);
 
         var payment = Payment.Create(

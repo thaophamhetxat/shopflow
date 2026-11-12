@@ -33,7 +33,7 @@ public sealed class PerformanceRegressionGuardTests
 
     private static string ConnectionString =>
         Environment.GetEnvironmentVariable("ConnectionStrings__InventoryDb")
-        ?? throw new InvalidOperationException("Set 'ConnectionStrings__InventoryDb' to run inventory performance guards.");
+        ?? "Host=localhost;Port=5432;Database=shopflow_inventory;Username=shopflow;Password=shopflow123;";
 
     private static InventoryDbContext CreateContext()
     {

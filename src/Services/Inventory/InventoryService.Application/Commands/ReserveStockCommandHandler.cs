@@ -7,6 +7,7 @@ using InventoryService.Application.Queries;
 using InventoryService.Domain.Repositories;
 using InventoryService.Domain.ValueObjects;
 using MediatR;
+using ShopFlow.BuildingBlocks;
 
 namespace InventoryService.Application.Commands;
 
@@ -39,6 +40,10 @@ public sealed class ReserveStockCommandHandler : IRequestHandler<ReserveStockCom
     /// <exception cref="ProductNotFoundException">Ném khi không tìm thấy sản phẩm.</exception>
     public async Task<ProductDto> Handle(ReserveStockCommand request, CancellationToken cancellationToken)
     {
+        using var activity = ShopFlowActivitySource.Source.StartActivity(ShopFlowActivitySource.InventoryReserve);
+        activity?.SetTag("product.id", request.ProductId.ToString());
+        activity?.SetTag("reserve.quantity", request.Quantity.ToString());
+
         await _validator.ValidateAndThrowAsync(request, cancellationToken);
 
         // Logic đọc -> kiểm tra -> trừ kho -> lưu đã được đóng gói vào repository ReserveAsync.

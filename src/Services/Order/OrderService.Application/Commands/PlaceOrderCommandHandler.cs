@@ -8,6 +8,7 @@ using OrderService.Domain.Aggregates;
 using OrderService.Domain.Entities;
 using OrderService.Domain.Repositories;
 using OrderService.Domain.ValueObjects;
+using ShopFlow.BuildingBlocks;
 
 namespace OrderService.Application.Commands;
 
@@ -39,6 +40,8 @@ public sealed class PlaceOrderCommandHandler : IRequestHandler<PlaceOrderCommand
     /// <returns>OrderId của đơn vừa tạo hoặc OrderId cũ khi key trùng.</returns>
     public async Task<OrderId> Handle(PlaceOrderCommand request, CancellationToken cancellationToken)
     {
+        using var activity = ShopFlowActivitySource.Source.StartActivity(ShopFlowActivitySource.OrderPlace);
+
         // Kiểm tra idempotency TRƯỚC khi tạo Order: cùng 1 key gửi 2 lần chỉ được tạo 1 Order, lần 2 trả lại OrderId cũ.
         if (!string.IsNullOrWhiteSpace(request.IdempotencyKey))
         {
@@ -52,6 +55,8 @@ public sealed class PlaceOrderCommandHandler : IRequestHandler<PlaceOrderCommand
         var customerId = CustomerId.From(request.CustomerId);
         var shippingAddress = new Address(request.Street, request.City, request.Country, request.PostalCode);
         var order = Order.Place(customerId, shippingAddress);
+        activity?.SetTag("order.id", order.Id.ToString());
+        activity?.SetTag("customer.id", request.CustomerId.ToString());
 
         foreach (var item in request.Items)
         {

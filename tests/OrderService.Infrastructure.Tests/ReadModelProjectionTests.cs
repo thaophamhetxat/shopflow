@@ -70,7 +70,7 @@ public sealed class ReadModelProjectionTests
     private static OrderDbContext CreateLoggingDbContext(Action<string> captureSqlLog)
     {
         var connectionString = Environment.GetEnvironmentVariable("ConnectionStrings__OrderDb")
-            ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;******;";
+            ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=shopflow123;";
         var options = new DbContextOptionsBuilder<OrderDbContext>()
             .UseNpgsql(connectionString)
             .LogTo(
@@ -655,7 +655,7 @@ public sealed class ReadModelProjectionTests
             var idempotencyKey = $"compiled-benchmark-{Guid.NewGuid():N}";
             var productId = ProductId.New();
             var inventoryConnectionString = Environment.GetEnvironmentVariable("ConnectionStrings__InventoryDb")
-                ?? throw new InvalidOperationException("Thiếu biến môi trường 'ConnectionStrings__InventoryDb' cho benchmark compiled query.");
+                ?? "Host=localhost;Port=5432;Database=shopflow_inventory;Username=shopflow;Password=shopflow123;";
 
             try
             {

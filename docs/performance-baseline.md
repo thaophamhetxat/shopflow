@@ -218,6 +218,29 @@ Lần đo này chạy sau khi Day 62 triển khai cache Redis và pool tuning. K
 Các thiết kế đã kiểm chứng:
 
 - Key format: `inventory:product:{id}` với TTL 30 giây.
+
+## Day 64 — distributed tracing with OpenTelemetry and Jaeger
+
+Day 64 đóng gói tracing ở `src/BuildingBlocks/ShopFlow.BuildingBlocks` và cho phép 3 API export span sang Jaeger qua OTLP gRPC trên `http://localhost:4317`. Span cốt lõi được đặt ở 6 vị trí:
+
+- `order.place`
+- `saga.step.reserve`
+- `saga.step.payment`
+- `outbox.process`
+- `inventory.reserve`
+- `payment.process`
+
+Package OpenTelemetry 1.9.0 được khai báo trong `ShopFlow.BuildingBlocks`:
+
+- `OpenTelemetry` 1.9.0
+- `OpenTelemetry.Exporter.OpenTelemetryProtocol` 1.9.0
+- `OpenTelemetry.Extensions.Hosting` 1.9.0
+- `OpenTelemetry.Instrumentation.AspNetCore` 1.9.0
+- `OpenTelemetry.Instrumentation.Http` 1.9.0
+
+Verification ngày `2026-11-13`: full solution suite **137/137 passed**. Jaeger UI trả `200`; `GET /health` của Order (`5181`), Inventory (`5140`) và Payment (`5199`) đều trả `200`. Smoke `POST /api/v1/orders` trả `201` cho order `e117fdc3-6bc6-4280-8863-7a414e87a235`; truy vấn Jaeger traces API bằng `curl` tìm thấy span `order.place` trong trace `0eab9771b80a3eacd86abc6ae3d53b6d`.
+
+Chi tiết setup và smoke test Jaeger được ghi ở [`docs/tracing.md`](./tracing.md).
 - Distributed lock: `SETNX`/`StringSet(..., When.NotExists)` trên `inventory:product:{id}:lock` với expiry 5 giây; lock chỉ là best-effort để giảm stampede, correctness vẫn dựa vào DB + TTL + invalidation sau write.
 - Invalidate sau `ReserveAsync`, `ReleaseStock` và `SaveChangesAsync` để tránh stale read trên cache.
 - Fallback khi Redis down: `RedisConnectionException`/`RedisTimeoutException` được log cảnh báo và hệ thống lùi về database mà không ném lỗi cho client.
