@@ -8,6 +8,8 @@ using InventoryService.Infrastructure.Persistence.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using StackExchange.Redis;
 
 namespace InventoryService.Infrastructure;
 
@@ -35,7 +37,16 @@ public static class DependencyInjection
         }
 
         services.AddDbContext<InventoryDbContext>(options => options.UseNpgsql(connectionString));
-        services.AddScoped<IProductRepository, ProductRepository>();
+
+        var redisConnectionString = configuration.GetConnectionString("Redis") ?? "localhost:6379";
+        services.AddSingleton<IConnectionMultiplexer>(_ => ConnectionMultiplexer.Connect(redisConnectionString));
+
+        // Decorator pattern: handler chỉ resolve IProductRepository nhưng inner ProductRepository vẫn còn sẵn cho test và direct wiring.
+        services.AddScoped<ProductRepository>();
+        services.AddScoped<IProductRepository>(provider => new CachedInventoryRepository(
+            provider.GetRequiredService<ProductRepository>(),
+            provider.GetRequiredService<IConnectionMultiplexer>(),
+            provider.GetRequiredService<ILogger<CachedInventoryRepository>>()));
 
         return services;
     }

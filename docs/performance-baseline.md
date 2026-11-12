@@ -201,3 +201,26 @@ The index is available and selected for bounded first-page keyset ordering; the 
 - Composite index: migration với 3 cột và order `DESC` đúng như mô tả.
 - Outbox: bulk `ExecuteUpdateAsync` đánh dấu đã xử lý.
 - Four new tests passed: `OrderListCursor_EncodeDecode_RoundTrips`, `ListOrdersByCustomer_WithBase64Cursor_ReturnsSecondPage`, `CompiledQueries_Benchmark_ReportsTimings`, and `OutboxProcessor_MarksProcessedMessages_WithSingleBulkUpdate`.
+
+## Day 62 — redis cache-aside and connection pool tuning
+
+Lần đo này chạy sau khi Day 62 triển khai cache Redis và pool tuning. Không có benchmark trước riêng biệt được chạy lại trong session này, nên bảng dưới ghi đúng số liệu thực tế chạy trên warm cache và nhấn mạnh thay đổi thiết kế so với Day 61.
+
+| Metric | Before (Day 61 baseline) | After (Day 62, warm cache) |
+|---|---:|---:|
+| Requests | N/A | 100 |
+| Avg (ms) | N/A | 31.55 |
+| p50 (ms) | N/A | 30.47 |
+| p99 (ms) | N/A | 55.88 |
+| Max (ms) | N/A | 55.88 |
+| Status | N/A | 200 OK |
+
+Các thiết kế đã kiểm chứng:
+
+- Key format: `inventory:product:{id}` với TTL 30 giây.
+- Distributed lock: `SETNX`/`StringSet(..., When.NotExists)` trên `inventory:product:{id}:lock` với expiry 5 giây; lock chỉ là best-effort để giảm stampede, correctness vẫn dựa vào DB + TTL + invalidation sau write.
+- Invalidate sau `ReserveAsync`, `ReleaseStock` và `SaveChangesAsync` để tránh stale read trên cache.
+- Fallback khi Redis down: `RedisConnectionException`/`RedisTimeoutException` được log cảnh báo và hệ thống lùi về database mà không ném lỗi cho client.
+- Pool tuning: `ConnectionStrings:InventoryDb` trong API có `Maximum Pool Size=20` và `Minimum Pool Size=5`.
+
+Phần cải thiện đo được trên warm cache là nhỏ vì cả Redis và PostgreSQL đều chạy local trên cùng máy, nên sự chênh lệch chủ yếu nằm ở phần giảm dao động latency sau khi cache đủ nóng và không phải đọc database lặp lại ở từng request. Về kỹ thuật, cache chỉ là layer tối ưu hóa; mọi correctness vẫn nghiêng về dữ liệu sống trên PostgreSQL.
