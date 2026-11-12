@@ -97,6 +97,27 @@ public class PlaceOrderCommandValidatorTests
         Assert.True(result.IsValid);
     }
 
+    // Test này chứng minh: mã tiền tệ phải là 3 chữ cái viết hoa, lowercase không được phép qua validator.
+    [Fact]
+    public void Validator_Rejects_LowercaseCurrency()
+    {
+        var command = new PlaceOrderCommand(
+            Guid.NewGuid(),
+            "123 Lê Lợi",
+            "Hà Nội",
+            "Việt Nam",
+            "100000",
+            new List<PlaceOrderItem>
+            {
+                new(Guid.NewGuid(), 1, 150000m, "vnd")
+            });
+
+        var result = new PlaceOrderCommandValidator().Validate(command);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, x => x.PropertyName.EndsWith(nameof(PlaceOrderItem.UnitPriceCurrency)));
+    }
+
     // Test này chứng minh Evidence Day 64: ActivityListener cho source `ShopFlow` bắt được span `order.place` khi handler tạo order thật.
     [Fact]
     public async Task PlaceOrder_StartsOrderPlaceSpan()

@@ -34,4 +34,11 @@ public class MoneyTests
 
         Assert.Throws<ArgumentException>(() => usd.Add(vnd));
     }
+
+    // Chứng minh: mã tiền tệ phải chuẩn ISO 4217 theo 3 chữ cái viết hoa, không chấp nhận lowercase hoặc ký tự không hợp lệ.
+    [Fact]
+    public void Money_LowercaseCurrency_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => new Money(10m, "usd"));
+    }
 }

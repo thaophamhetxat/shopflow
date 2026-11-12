@@ -54,7 +54,7 @@ public sealed class PlaceOrderCommandValidator : AbstractValidator<PlaceOrderCom
                 // Currency rỗng hoặc sai định dạng làm tổng tiền không thể hợp lệ, nên phải chặn trước khi map sang Money trong domain.
                 item.RuleFor(x => x.UnitPriceCurrency)
                     .NotEmpty()
-                    .Must(currency => currency.Length == 3 && currency.All(char.IsLetter));
+                    .Must(currency => currency is { Length: 3 } && currency.All(character => character is >= 'A' and <= 'Z'));
             });
     }
 }

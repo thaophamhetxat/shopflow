@@ -45,14 +45,14 @@ public readonly struct Money : IEquatable<Money>
 
         var normalizedCurrency = currency.Trim();
 
-        // Từ chối mã tiền tệ không đúng 3 chữ cái: chuẩn hóa theo mục tiêu nghiệp vụ giúp hệ thống tránh lưu ký hiệu sai hoặc ký tự đặc biệt.
-        if (normalizedCurrency.Length != 3 || !normalizedCurrency.All(char.IsLetter))
+        // Từ chối mã tiền tệ không đúng 3 chữ cái in hoa: domain yêu cầu dữ liệu tiền tệ phải chuẩn mực để tránh cộng/trừ giữa các loại tiền không tương ứng.
+        if (normalizedCurrency.Length != 3 || !normalizedCurrency.All(character => character is >= 'A' and <= 'Z'))
         {
             throw new ArgumentException("Mã tiền tệ phải là 3 ký tự chữ cái viết hoa, ví dụ USD.", nameof(currency));
         }
 
         Amount = amount;
-        Currency = normalizedCurrency.ToUpperInvariant();
+        Currency = normalizedCurrency;
     }
 
     /// <summary>
