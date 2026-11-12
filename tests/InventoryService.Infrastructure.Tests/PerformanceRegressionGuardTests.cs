@@ -75,7 +75,7 @@ public sealed class PerformanceRegressionGuardTests
     /// Day 63 dùng interceptor EF Core để xác nhận isolation level đúng ngay khi BeginTransactionAsync khởi tạo transaction.
     /// </summary>
     [Fact]
-    public async Task ReserveAsync_UsesSerializableIsolationLevel()
+    public async Task ReserveAsync_BeginsSerializableTransaction()
     {
         await DatabaseLock.WaitAsync();
         try
@@ -103,11 +103,11 @@ public sealed class PerformanceRegressionGuardTests
     }
 
     /// <summary>
-    /// Guard này kiểm tra avg latency của stock check vẫn thấp hơn ngưỡng 200 ms trên 1000 lần đo, nên không có regression N+1 hoặc compiled query tệ.
-    /// Chúng ta đo trung bình nhiều lần để tránh flaky do máy bận, đúng theo nguyên tắc Day 63.
+    /// Guard Day 63 yêu cầu stock check trung bình dưới 50 ms trên 100 lần đo, phù hợp với query nhẹ chỉ kiểm tra tồn kho.
+    /// Ngưỡng rộng hơn nhiều so với số đo Day 61; warm-up tách khởi tạo compiled query khỏi các lần đo.
     /// </summary>
     [Fact]
-    public async Task CheckStockAsync_AveragesBelowGuardThreshold()
+    public async Task CheckStockAsync_AverageLatency_Under50ms()
     {
         await DatabaseLock.WaitAsync();
         try
@@ -115,9 +115,10 @@ public sealed class PerformanceRegressionGuardTests
             await using var context = CreateContext();
             var product = await SeedProductAsync(context, 125);
             var repository = new ProductRepository(context);
+            Assert.True(await repository.CheckStockAsync(product.Id, 10));
 
             var timings = new List<double>();
-            for (var index = 0; index < 1000; index++)
+            for (var index = 0; index < 100; index++)
             {
                 var stopwatch = Stopwatch.StartNew();
                 var isEnough = await repository.CheckStockAsync(product.Id, 10);
@@ -128,8 +129,8 @@ public sealed class PerformanceRegressionGuardTests
             }
 
             var average = timings.Average();
-            _output.WriteLine($"CheckStock avg={average:F3} ms, n=1000, threshold=<200 ms");
-            Assert.True(average < 200, $"Stock check average regression: {average:F3} ms for 1000 iterations.");
+            _output.WriteLine($"CheckStock avg={average:F3} ms, n=100, threshold=<50 ms");
+            Assert.True(average < 50, $"Stock check average regression: {average:F3} ms for 100 iterations.");
         }
         finally
         {

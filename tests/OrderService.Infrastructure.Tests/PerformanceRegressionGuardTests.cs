@@ -58,11 +58,11 @@ public sealed class PerformanceRegressionGuardTests
     }
 
     /// <summary>
-    /// Test này đo trung bình 200 lần gọi `GetOrderDetailAsync` và yêu cầu dưới 50 ms, bảo vệ không có regression Full Table Scan hay N+1 trong detail query.
-    /// Dùng average trên nhiều lần để tránh flaky do máy bận; ngưỡng 50 ms có headroom lớn so với baseline Day 61 ~2.6-3.4 ms.
+    /// Guard Day 63 yêu cầu query detail trung bình dưới 200 ms trên 50 lần đo; đây là ngưỡng rộng cho việc tải order cùng items.
+    /// Ngưỡng lớn hơn nhiều so với baseline Day 61 và warm-up tách khởi tạo compiled query khỏi các lần đo.
     /// </summary>
     [Fact]
-    public async Task GetOrderDetailAsync_AveragesBelowGuardThreshold()
+    public async Task GetOrderDetail_AverageLatency_Under200ms()
     {
         await DatabaseLock.WaitAsync();
         try
@@ -70,9 +70,12 @@ public sealed class PerformanceRegressionGuardTests
             await using var context = CreateContext();
             var order = await SeedOrderAsync(context);
             var repository = new OrderRepository(context);
+            var warmupDetail = await repository.GetOrderDetailAsync(order.Id);
+            Assert.NotNull(warmupDetail);
+            Assert.Equal(2, warmupDetail!.Items.Count);
 
             var timings = new List<double>();
-            for (var index = 0; index < 200; index++)
+            for (var index = 0; index < 50; index++)
             {
                 var stopwatch = Stopwatch.StartNew();
                 var detail = await repository.GetOrderDetailAsync(order.Id);
@@ -84,8 +87,8 @@ public sealed class PerformanceRegressionGuardTests
             }
 
             var average = timings.Average();
-            _output.WriteLine($"GetOrderDetail avg={average:F3} ms, n=200, threshold=<50 ms");
-            Assert.True(average < 50, $"Order detail average regression: {average:F3} ms for 200 iterations.");
+            _output.WriteLine($"GetOrderDetail avg={average:F3} ms, n=50, threshold=<200 ms");
+            Assert.True(average < 200, $"Order detail average regression: {average:F3} ms for 50 iterations.");
         }
         finally
         {

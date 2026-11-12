@@ -4,49 +4,42 @@
 
 Tài liệu này ghi lại 10 best practice EF Core đã được chứng minh trong repo ShopFlow, với mốc Day thật để team triển khai và kiểm tra khi refactor query hoặc persistence.
 
-### 1. Set transaction boundary explicitly for critical writes (Day 58)
+### 1. Project bằng `Select` trong SQL, map phần không dịch được ở memory (Day 46/60/61)
 
-Always open a transaction around the row-locking workflow that performs read-modify-write. In `ProductRepository.ReserveAsync`, the `SELECT ... FOR UPDATE` needs a surrounding transaction, otherwise PostgreSQL releases the lock immediately after the read and concurrent reservations can race.
+Chỉ chọn các cột cần thiết cho read model bằng `Select`/projection phía database. Một số phép biến đổi domain như Money serialize thành `amount|currency` hoặc `Guid.CompareTo` không dịch được sang SQL thì thực hiện ở memory sau khi đã giới hạn dữ liệu trong database.
 
-### 2. Use `SELECT ... FOR UPDATE` for inventory reservation (Day 58)
+### 2. Dùng keyset pagination trong SQL với `CreatedAt` và `Id` (Day 46/61)
 
-When several requests reserve the same product at once, the database must serialize the hot row. The guarded query should target the specific product row and hold the lock until the reservation is saved and committed.
+Dùng keyset thay cho `OFFSET` để trang tiếp theo không bị trôi khi có dữ liệu mới. Lọc và sắp xếp theo `CreatedAt`; dùng `Id` làm tie-breaker ổn định, xử lý trong memory khi provider không dịch phép so sánh `Guid` của value object.
 
-### 3. Apply `IsolationLevel.Serializable` on the reservation path (Day 63)
+### 3. Dùng compiled query cho hot path và đo hiệu quả thực tế (Day 61)
 
-The reservation workflow is not just a single-row lock; it is also a write-skew-sensitive workflow. Using `BeginTransactionAsync(IsolationLevel.Serializable, ...)` closes the gap where two reservations read the same stock snapshot before either commits.
+ShopFlow dùng `EF.CompileAsyncQuery` cho stock check và order detail. EF Core vốn đã cache query compilation; compiled query không đảm bảo một mức cải thiện cố định như 30%, vì vậy cần benchmark workload thật thay vì mặc định kỳ vọng một tỷ lệ.
 
-### 4. Prefer compiled queries for hot read paths (Day 61)
+### 4. Dùng `AsNoTracking()` cho đường đọc, tracking khi cần ghi (Day 60)
 
-`OrderRepository.GetOrderDetailAsync` and `ProductRepository.CheckStockAsync` cache `EF.CompileAsyncQuery` delegates so the LINQ expression is not recompiled on every request. The result is a tighter hot-path latency profile while keeping query behavior unchanged.
+Read model chỉ đọc nên dùng `AsNoTracking()` để không đưa entity vào `ChangeTracker`. Các command cần thay đổi aggregate dùng entity tracked để EF Core lưu đúng thay đổi khi `SaveChangesAsync` được gọi.
 
-### 5. Keep read-only queries `AsNoTracking` (Day 46)
+### 5. Dùng `SELECT ... FOR UPDATE` trong transaction Serializable cho reservation (Day 58/63)
 
-Read models and DTO projection queries should not attach entities to the `DbContext`. This avoids accidentally mutating tracked state and reduces memory overhead for projection read paths such as detail/list queries.
+Mở transaction tường minh ở `ProductRepository.ReserveAsync`, khóa row bằng `SELECT ... FOR UPDATE`, rồi áp dụng domain rule, lưu và commit trong cùng transaction với `IsolationLevel.Serializable`. PostgreSQL có thể trả SQLSTATE `40001` khi tranh chấp; retry có giới hạn phải tạo transaction mới và đọc lại row.
 
-### 6. Use bulk update for outbox drain (Day 61)
+### 6. Không dùng `lock()` trong async; dùng `SemaphoreSlim`/`AsyncLock` (Day 58)
 
-For the outbox, prefer one bulk `ExecuteUpdateAsync` at the end of the drain cycle instead of N individual saves. This keeps SQL count low and preserves idempotent processing semantics for the outbox pattern.
+`lock()` không thể giữ đồng bộ qua `await` và không phù hợp để khóa luồng async. Dùng `SemaphoreSlim` hoặc `AsyncLock` để việc chờ lock có thể await và hỗ trợ cancellation.
 
-### 7. Cache-aside should be a performance optimization, not correctness (Day 62)
+### 7. Dùng `ExecuteUpdateAsync` cho bulk update thay vì N lần `SaveChangesAsync` (Day 61)
 
-The Redis cache is a best-effort optimization with TTL plus invalidation on reserve/release. Database correctness remains the source of truth; the cache only reduces repeated reads and dampens hot-path burstiness.
+Outbox drain gom các message cần đánh dấu rồi cập nhật bằng một bulk `ExecuteUpdateAsync`. Điều này giảm số lệnh database so với lưu từng entity một, đồng thời giữ semantics xử lý at-least-once.
 
-### 8. Protect the database connection pool (Day 62)
+### 8. Cache-aside: TTL và invalidate khi ghi; không cache entity tracked (Day 62)
 
-The app should tune connection pool sizing to the workload, with a non-zero minimum pool and a bounded maximum pool. In ShopFlow, the inventory service uses `Maximum Pool Size=20` and `Minimum Pool Size=5` to avoid churn while keeping resource usage controlled.
+Redis là tối ưu hóa best-effort, không phải nguồn dữ liệu đúng duy nhất. Dùng TTL, invalidate sau các thao tác ghi, chỉ cache dữ liệu đọc cần thiết thay vì entity tracked, và dựng lại aggregate qua factory khi cần.
 
-### 9. Log SQL and verify query count in tests (Day 60)
+### 9. Tune connection pool bằng `Maximum Pool Size`/`Minimum Pool Size` (Day 62)
 
-When a change is supposed to remove N+1 or a full-table load, log the `DbCommand` output and assert the command count. This is the quickest way to catch accidental overhead before it reaches production.
+Điều chỉnh pool theo tải và giới hạn tài nguyên database. Cấu hình Inventory hiện đặt `Maximum Pool Size=20` và `Minimum Pool Size=5`; mọi thay đổi cần được đo và cấu hình qua connection string hiện hành.
 
-### 10. Guard performance with average-based regression tests (Day 63)
+### 10. Xác minh bằng SQL log, query count và guard latency trung bình (Day 60/61/63)
 
-Critical paths must carry latency guards that evaluate the mean of many repeated measurements. This avoids flaky single-run timing and catches real regressions such as reintroduced N+1 patterns or a stale compiled query path.
-
-## Execution checklist
-
-- Validate the isolation level with a real transaction log.
-- Measure average latency over repeated calls, not a single-run snapshot.
-- Keep the database as the source of truth; cache and query optimization are secondary.
-- Save a benchmark note in `docs/performance-baseline.md` whenever a release gate changes.
+Dùng EF Core `LogTo` để xem `Executed DbCommand`, đồng thời test số query để bắt N+1 hoặc full-table load. Với hot path, đo trung bình qua nhiều lần lặp và đặt ngưỡng có căn cứ từ baseline để giảm flaky do một lần chạy bất thường.

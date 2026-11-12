@@ -227,17 +227,16 @@ Phần cải thiện đo được trên warm cache là nhỏ vì cả Redis và 
 
 ## Day 63 — transaction isolation and regression guard tests
 
-`ProductRepository.ReserveAsync` now requests `IsolationLevel.Serializable`. The new EF Core transaction interceptor observed `Serializable` when the reservation transaction started, and the focused isolation guard passed. The existing concurrent reservation test did **not** pass under this isolation level: PostgreSQL returned `40001: could not serialize access due to concurrent update` before all ten requests could be classified as five successful and five domain failures. No serialization retry was added; this remains an issue to analyze.
+`ProductRepository.ReserveAsync` uses `IsolationLevel.Serializable`. The EF Core transaction interceptor observed `Serializable`. A reservation retries only PostgreSQL SQLSTATE `40001`, for at most five total attempts with a new transaction on every attempt. The delay is exponential (50, 100, 200, 400 ms) plus 0–49 ms of random jitter; domain failures and other errors are not retried. Jitter helps prevent aborted transactions from synchronizing and colliding again.
 
-The two performance guards passed, measuring average latency across repeated calls on PostgreSQL at `2026-11-12 18:27:21 +07:00`:
+`Concurrent_ReserveSameProduct_NoOversell` passed in the full-suite run, preserving its assertions of five successful reservations, five `InventoryDomainException` failures, and zero remaining stock. All three Day 63 guards passed with the corrected thresholds:
 
-| Guard | Threshold | Iterations | Measured average (ms) | Result |
-|---|---:|---:|---:|---|
-| `CheckStockAsync` | <200 ms | 1,000 | 2.501 | PASS |
-| `GetOrderDetailAsync` | <50 ms | 200 | 3.160 | PASS |
+| Guard | Threshold | Measured iterations | Measured average (ms) | Measurement time (+07:00) | Result |
+|---|---:|---:|---:|---|---|
+| `CheckStockAsync_AverageLatency_Under50ms` | <50 ms | 100 | 0.945 | 2026-11-12 20:47:17 | PASS |
+| `GetOrderDetail_AverageLatency_Under200ms` | <200 ms | 50 | 2.412 | 2026-11-12 20:47:23 | PASS |
+| `ReserveAsync_BeginsSerializableTransaction` | Isolation level = Serializable | 1 | N/A | Full-suite run | PASS |
 
-The thresholds leave headroom over the existing Day 61 measurements (approximately 1.4–2.0 ms for stock check and 2.6–3.4 ms for order detail), so normal local timing variation should not trip the guards while a substantial regression can.
+The latest full-suite run passed 132/134 tests. The only failures were `PlaceOrder_EndToEnd_SagaConfirmsOrderAndPersistsCompletedState` (the 15-second confirmation timeout) and `ChannelFull_LogsWarning_WhenAtCapacity` (the 3-minute condition timeout). Both are known timing-sensitive tests: they passed when run individually and failed under full-suite load. Their stabilization will be handled separately; neither test was changed for Day 63.
 
-The focused Day 63 tests passed (3/3). The full solution run did not pass: besides the `40001` concurrent-reservation failure, two saga integration assertions and one outbox pipeline timeout failed. These failures are recorded for analysis; no retry or changes to the existing tests were made.
-
-See [`efcore-playbook.md`](efcore-playbook.md) for the 10 EF Core practices recorded for this project.
+See [`efcore-playbook.md`](efcore-playbook.md) for the 10 EF Core practices recorded for this project, including projections, keyset pagination, async locks, cache-aside and performance guards.

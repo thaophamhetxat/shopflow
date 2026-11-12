@@ -9,6 +9,9 @@ using InventoryService.Domain.Aggregates;
 using InventoryService.Domain.Repositories;
 using InventoryService.Domain.ValueObjects;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Npgsql;
 
 namespace InventoryService.Infrastructure.Persistence.Repositories;
 
@@ -25,14 +28,17 @@ public sealed class ProductRepository : IProductRepository
                 .Any(product => product.Id == productId && product.StockQuantity >= quantity));
 
     private readonly InventoryDbContext _dbContext;
+    private readonly ILogger<ProductRepository> _logger;
 
     /// <summary>
-    /// Tạo repository với context inventory hiện tại.
+    /// Tạo repository với context inventory hiện tại và logger.
     /// </summary>
     /// <param name="dbContext">Context EF Core quản lý Product.</param>
-    public ProductRepository(InventoryDbContext dbContext)
+    /// <param name="logger">Logger ghi cảnh báo khi reservation cần retry sau lỗi serialization.</param>
+    public ProductRepository(InventoryDbContext dbContext, ILogger<ProductRepository>? logger = null)
     {
         _dbContext = dbContext;
+        _logger = logger ?? NullLogger<ProductRepository>.Instance;
     }
 
     /// <summary>
@@ -68,37 +74,88 @@ public sealed class ProductRepository : IProductRepository
     /// <returns>Product sau khi đã trừ kho và lưu transaction thành công.</returns>
     /// <exception cref="ProductNotFoundException">Ném khi không tìm thấy product theo id.</exception>
     /// <exception cref="InventoryDomainException">Ném khi số lượng không hợp lệ hoặc kho không đủ; exception này được giữ nguyên theo domain rule.</exception>
+    /// <exception cref="PostgresException">Ném lỗi PostgreSQL không phải lỗi serialization hoặc lỗi serialization sau năm lần thử.</exception>
     public async Task<Product> ReserveAsync(ProductId id, int quantity, CancellationToken cancellationToken = default)
     {
-        // Day 63 yêu cầu serializable cho reservation để khóa toàn bộ phạm vi đọc-modify-write dưới cùng một isolation level.
-        // Với PostgreSQL, `SELECT ... FOR UPDATE` chỉ chịu hiệu lực nếu transaction được mở với isolation level đủ chặt để chặn write skew giữa các request cùng reserve một SKU.
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
-
-        try
+        const int maxAttempts = 5;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            // Transaction tường minh là bắt buộc ở đây: FOR UPDATE chỉ giữ lock trong khoảng transaction.
-            // Nếu không mở transaction, SELECT FOR UPDATE sẽ release lock ngay sau câu SELECT và race condition vẫn xảy ra.
-            var product = await _dbContext.Products
-                .FromSqlRaw("SELECT * FROM products WHERE id = {0} FOR UPDATE", id.Value)
-                .SingleOrDefaultAsync(cancellationToken);
-
-            if (product is null)
+            Product? product = null;
+            try
             {
-                throw new ProductNotFoundException(id.Value);
-            }
+                // Serializable + FOR UPDATE có thể khiến PostgreSQL hủy transaction đang tranh chấp row bằng SQLSTATE 40001.
+                // Năm lần thử tổng cộng là giới hạn để contention không tạo vòng lặp vô hạn; mỗi lần bắt đầu transaction mới.
+                await using var transaction = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
 
-            // Domain rule Reserve phải giữ nguyên: thiếu hàng throw InventoryDomainException, không sửa aggregate.
-            product.Reserve(quantity);
-            await _dbContext.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
-            return product;
+                try
+                {
+                    // Retry phải chạy lại SELECT FOR UPDATE để đọc stock mới nhất và áp dụng domain rule trên dữ liệu đã commit.
+                    // Transaction tường minh giữ row lock tới khi reservation được lưu và commit.
+                    product = await _dbContext.Products
+                        .FromSqlRaw("SELECT * FROM products WHERE id = {0} FOR UPDATE", id.Value)
+                        .SingleOrDefaultAsync(cancellationToken);
+
+                    if (product is null)
+                    {
+                        throw new ProductNotFoundException(id.Value);
+                    }
+
+                    // Lỗi nghiệp vụ như hết hàng không phải lỗi serialization nên không được retry.
+                    product.Reserve(quantity);
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+                    await transaction.CommitAsync(cancellationToken);
+                    return product;
+                }
+                catch
+                {
+                    // Nếu Reserve ném thiếu hàng hoặc thao tác ghi lỗi, rollback để transaction không lưu trạng thái dở dang.
+                    await transaction.RollbackAsync(cancellationToken);
+                    throw;
+                }
+            }
+            catch (Exception exception) when (FindPostgresException(exception)?.SqlState == PostgresErrorCodes.SerializationFailure)
+            {
+                if (attempt == maxAttempts)
+                {
+                    throw;
+                }
+
+                // EF có thể bọc lỗi provider; chỉ SQLSTATE 40001 mới retry. Detach entity rollback để retry không dùng stock cũ trong ChangeTracker.
+                var trackedProduct = product ?? _dbContext.Products.Local.FirstOrDefault(candidate => candidate.Id == id);
+                if (trackedProduct is not null)
+                {
+                    _dbContext.Entry(trackedProduct).State = EntityState.Detached;
+                }
+
+                _logger.LogWarning(
+                    exception,
+                    "ReserveAsync serialization failure {SqlState}; retrying attempt {Attempt}/{MaxAttempts} for ProductId {ProductId}.",
+                    PostgresErrorCodes.SerializationFailure,
+                    attempt,
+                    maxAttempts,
+                    id.Value);
+
+                // Backoff lũy thừa 50/100/200/400 ms giúp giao dịch có thời gian thoát tranh chấp.
+                // Jitter ngẫu nhiên phá đồng bộ retry khi nhiều transaction cùng bị abort, tránh chúng va chạm lại theo nhịp cố định.
+                var backoffMilliseconds = 50 * (1 << (attempt - 1)) + Random.Shared.Next(0, 50);
+                await Task.Delay(TimeSpan.FromMilliseconds(backoffMilliseconds), cancellationToken);
+            }
         }
-        catch
+
+        throw new InvalidOperationException("ReserveAsync completed without a reservation result.");
+    }
+
+    private static PostgresException? FindPostgresException(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
         {
-            // Nếu Reserve ném thiếu hàng hoặc SaveChanges lỗi, rollback transaction để tránh lưu trạng thái bán trùng.
-            await transaction.RollbackAsync(cancellationToken);
-            throw;
+            if (current is PostgresException postgresException)
+            {
+                return postgresException;
+            }
         }
+
+        return null;
     }
 
     /// <summary>
