@@ -5,6 +5,10 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using OrderService.API.Dtos;
 using OrderService.Application.Queries;
 
@@ -15,6 +19,7 @@ namespace OrderService.IntegrationTests;
 /// </summary>
 public sealed class OrderApiIntegrationTests : IClassFixture<ShopFlowWebApplicationFactory>, IDisposable
 {
+    private readonly ShopFlowWebApplicationFactory _factory;
     private readonly HttpClient _client;
 
     /// <summary>
@@ -23,6 +28,7 @@ public sealed class OrderApiIntegrationTests : IClassFixture<ShopFlowWebApplicat
     /// <param name="factory">Factory chứa API test và PostgreSQL Testcontainers.</param>
     public OrderApiIntegrationTests(ShopFlowWebApplicationFactory factory)
     {
+        _factory = factory;
         _client = factory.CreateClient();
     }
 
@@ -32,6 +38,59 @@ public sealed class OrderApiIntegrationTests : IClassFixture<ShopFlowWebApplicat
     public void Dispose()
     {
         _client.Dispose();
+    }
+
+    [Fact]
+    // Evidence Day 65: readiness trả 200 khi PostgreSQL, Redis và RabbitMQ của test host đều khỏe.
+    public async Task HealthReady_Returns200_WhenDependenciesHealthy()
+    {
+        using var response = await _client.GetAsync("/health/ready");
+        var body = await response.Content.ReadAsStringAsync();
+        var report = await _factory.Services
+            .GetRequiredService<HealthCheckService>()
+            .CheckHealthAsync(check => check.Tags.Contains("ready"));
+        var checks = string.Join(", ", report.Entries.Select(entry =>
+            $"{entry.Key}={entry.Value.Status}:{entry.Value.Exception?.GetType().Name ?? "none"}"));
+
+        Assert.True(response.StatusCode == HttpStatusCode.OK, $"{body}; {checks}");
+    }
+
+    [Fact]
+    // Evidence Day 65: override OrderDb tới port không có listener chứng minh dependency fail sẽ làm readiness trả 503 mà không dừng PostgreSQL thật.
+    public async Task HealthReady_Returns503_WhenDatabaseUnavailable()
+    {
+        using var unavailableFactory = _factory.WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:OrderDb"] = "Host=localhost;Port=5999;Database=shopflow_order;Username=shopflow;Password=shopflow123"
+                })));
+        using var client = unavailableFactory.CreateClient();
+        using var response = await client.GetAsync("/health/ready");
+        var report = await unavailableFactory.Services
+            .GetRequiredService<HealthCheckService>()
+            .CheckHealthAsync(check => check.Tags.Contains("ready"));
+        var configuredOrderDb = unavailableFactory.Services
+            .GetRequiredService<IConfiguration>()
+            .GetConnectionString("OrderDb");
+        var checks = string.Join(", ", report.Entries.Select(entry =>
+            $"{entry.Key}={entry.Value.Status}:{entry.Value.Exception?.GetType().Name ?? "none"}"));
+
+        Assert.True(
+            response.StatusCode == HttpStatusCode.ServiceUnavailable,
+            $"Expected 503 but got {(int)response.StatusCode}; configuredPort5999={configuredOrderDb?.Contains("Port=5999")}; {checks}");
+    }
+
+    [Fact]
+    // Evidence Day 65: endpoint scrape Prometheus công bố đúng hai counter nghiệp vụ custom.
+    public async Task MetricsEndpoint_ExposesCustomMetrics()
+    {
+        using var response = await _client.GetAsync("/metrics");
+        var metrics = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("shopflow_orders_created_total", metrics);
+        Assert.Contains("shopflow_saga_runs_total", metrics);
     }
 
     [Fact]

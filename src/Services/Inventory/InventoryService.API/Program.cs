@@ -6,15 +6,20 @@ using InventoryService.Application;
 using InventoryService.Infrastructure;
 using InventoryService.Infrastructure.Persistence;
 using InventoryService.Infrastructure.Persistence.SeedData;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
 using ShopFlow.BuildingBlocks;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.AddShopFlowSerilog("shopflow-inventory");
 
-builder.Services.AddHealthChecks();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
+builder.Services.AddShopFlowHealthChecks(
+    serviceProvider => serviceProvider.GetRequiredService<IConfiguration>().GetConnectionString("InventoryDb"),
+    builder.Configuration.GetConnectionString("Redis"),
+    null);
 builder.Services.AddShopFlowTracing(builder.Configuration, "shopflow-inventory");
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
@@ -36,6 +41,7 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
+app.UseShopFlowMetrics();
 app.UseSwagger();
 app.UseSwaggerUI(options =>
 {
@@ -43,6 +49,8 @@ app.UseSwaggerUI(options =>
 });
 
 app.MapHealthChecks("/health");
+// Readiness kiểm tra dependency database/cache để phân biệt service sẵn sàng với process chỉ còn sống.
+app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = check => check.Tags.Contains("ready") });
 app.MapInventoryEndpoints();
 app.MapGet("/health/live", () => Results.Ok(new { status = "Live" }));
 

@@ -1,0 +1,13 @@
+# File này provision Prometheus làm nguồn dữ liệu mặc định của Grafana.
+# URL dùng DNS service trong compose network, không phụ thuộc địa chỉ host.
+# Day 65 dùng datasource này cho dashboard ShopFlow đã version-control.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true

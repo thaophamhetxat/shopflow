@@ -315,8 +315,6 @@ public sealed class OutboxProcessor : BackgroundService
 
     private async Task<bool> PublishAsync(OutboxMessage message, CancellationToken stoppingToken)
     {
-        using var logScope = ShopFlowActivitySource.BeginLogScope(_logger);
-
         try
         {
             await using var scope = _scopeFactory.CreateAsyncScope();

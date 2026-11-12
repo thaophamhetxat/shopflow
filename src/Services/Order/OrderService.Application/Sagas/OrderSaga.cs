@@ -80,8 +80,6 @@ public sealed class OrderSaga : IOrderSaga
     /// <returns>Task hoàn tất sau khi order đạt trạng thái đã xử lý hoặc dừng ở failed state.</returns>
     public async Task RunAsync(Guid orderId, CancellationToken cancellationToken = default)
     {
-        using var logScope = ShopFlowActivitySource.BeginLogScope(_logger);
-
         var persistedOrder = await _orderRepository.GetByIdAsync(OrderId.From(orderId), cancellationToken);
         if (persistedOrder is null)
         {
@@ -197,6 +195,8 @@ public sealed class OrderSaga : IOrderSaga
                             await CompensateAsync(persistedOrder, cancellationToken);
                             await _sagaStateRepository.UpsertAsync(orderId, SagaStateStatus.FailedInventory, errorMessage: errorMessage, cancellationToken: cancellationToken);
                             _logger.LogWarning("Saga {OrderId} dừng ở FailedInventory do reserve sản phẩm {ProductId} thất bại: {ErrorMessage}.", orderId, item.ProductId, errorMessage);
+                            // Đếm kết quả nghiệp vụ sau compensation và khi FailedInventory đã được lưu.
+                            ShopFlowMetrics.SagaRuns.WithLabels("failed_inventory").Inc();
                             return;
                         }
 
@@ -235,6 +235,8 @@ public sealed class OrderSaga : IOrderSaga
                         await CompensateAsync(persistedOrder, cancellationToken);
                         await _sagaStateRepository.UpsertAsync(orderId, SagaStateStatus.FailedPayment, errorMessage: errorMessage, cancellationToken: cancellationToken);
                         _logger.LogWarning("Saga {OrderId} dừng ở FailedPayment vì PaymentStatus={Status}.", orderId, chargeResult?.Status ?? "Unknown");
+                        // Đếm kết quả nghiệp vụ sau compensation và khi FailedPayment đã được lưu.
+                        ShopFlowMetrics.SagaRuns.WithLabels("failed_payment").Inc();
                         return;
                     }
                 }
@@ -242,6 +244,8 @@ public sealed class OrderSaga : IOrderSaga
                 persistedOrder.Confirm();
                 await _orderRepository.SaveChangesAsync(cancellationToken);
                 await _sagaStateRepository.UpsertAsync(orderId, SagaStateStatus.Completed, cancellationToken: cancellationToken);
+                // Đếm saga hoàn tất chỉ sau khi aggregate và state Completed đã persist thành công.
+                ShopFlowMetrics.SagaRuns.WithLabels("completed").Inc();
                 _logger.LogInformation("Saga {OrderId} hoàn tất: Payment succeeded, Order đã Confirmed và state = Completed.", orderId);
             }
         }

@@ -1,0 +1,18 @@
+# File này định nghĩa scrape target Prometheus cho API ShopFlow chạy trên host.
+# Các cổng lấy từ launchSettings.json; Notification API dùng cổng 5035.
+# Day 65 thu thập bốn API và Prometheus để dashboard Grafana đọc metric thật.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: shopflow
+    static_configs:
+      - targets:
+          - host.docker.internal:5181
+          - host.docker.internal:5140
+          - host.docker.internal:5199
+          - host.docker.internal:5035
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090

@@ -68,6 +68,9 @@ public sealed class PlaceOrderCommandHandler : IRequestHandler<PlaceOrderCommand
         await _orderRepository.AddAsync(order, cancellationToken);
         await _orderRepository.SaveChangesAsync(cancellationToken);
 
+        // Chỉ đếm sau khi repository persist thành công để không tính request bị validation hoặc persistence từ chối.
+        ShopFlowMetrics.OrdersCreated.Inc();
+
         // Lưu kết quả với TTL 24h: key chỉ có tác dụng chống gửi trùng trong 24h, quá hạn gửi lại key cũ được tính là lệnh mới.
         if (!string.IsNullOrWhiteSpace(request.IdempotencyKey))
         {

@@ -1,0 +1,14 @@
+# File này cấu hình Grafana tự nạp dashboard JSON từ thư mục được mount.
+# Provider giữ dashboard ShopFlow đồng bộ với cấu hình trong Git.
+# Day 65 provision đúng bốn panel metrics đã chốt.
+apiVersion: 1
+
+providers:
+  - name: ShopFlow
+    orgId: 1
+    folder: ShopFlow
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

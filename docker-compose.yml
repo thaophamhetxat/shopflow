@@ -1,5 +1,5 @@
 # File này định nghĩa hạ tầng cốt lõi của ShopFlow ở Day 38: PostgreSQL, Redis và RabbitMQ.
-# Chúng ta chỉ giữ 3 service infra cho bounded context, không thêm Jaeger/Prometheus/Grafana vì lịch chốt thêm ở Day 64–65.
+# Jaeger được thêm ở Day 64; Prometheus và Grafana được bổ sung ở Day 65 mà không đổi các service đã có.
 # Cấu hình này phục vụ local development: các service chạy bằng Docker, app .NET chạy bằng dotnet run trên máy.
 services:
   postgres:
@@ -97,6 +97,35 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Không đặt depends_on vì Day 49 không có 3 API trong compose; gateway chỉ proxy đến process local đã chạy ngoài compose.
+    restart: unless-stopped
+
+  prometheus:
+    # Prometheus scrape metric từ bốn API local và chính nó để cung cấp nguồn dữ liệu cho dashboard.
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    # Dùng cùng host-gateway pattern của Gateway để container truy cập API chạy trên Windows host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  grafana:
+    # Grafana local dùng Prometheus datasource và dashboard provisioning đã version-control.
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
     restart: unless-stopped
 
 volumes:

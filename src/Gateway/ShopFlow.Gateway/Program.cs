@@ -55,6 +55,47 @@ app.MapGet("/health", async (IHttpClientFactory httpClientFactory) =>
         : Results.Ok(new { status = "Healthy", services = checks });
 });
 
+// Readiness probe của gateway chỉ thành công khi cả ba downstream đã sẵn sàng nhận nghiệp vụ.
+app.MapGet("/health/ready", async (
+    IHttpClientFactory httpClientFactory,
+    ILogger<Program> logger,
+    CancellationToken cancellationToken) =>
+{
+    var httpClient = httpClientFactory.CreateClient("GatewayHealth");
+    var serviceTargets = new[]
+    {
+        new { Name = "orders", Url = "http://localhost:5181/health/ready" },
+        new { Name = "inventory", Url = "http://localhost:5140/health/ready" },
+        new { Name = "payments", Url = "http://localhost:5199/health/ready" }
+    };
+
+    var checks = await Task.WhenAll(serviceTargets.Select(async service =>
+    {
+        try
+        {
+            var response = await httpClient.GetAsync(service.Url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            var payload = await response.Content.ReadAsStringAsync();
+            var isHealthy = response.IsSuccessStatusCode;
+            return new { service.Name, Status = isHealthy ? "Healthy" : "Unhealthy", Healthy = isHealthy, ResponseBody = payload };
+        }
+        catch (HttpRequestException ex)
+        {
+            logger.LogWarning(ex, "Gateway readiness probe to {Service} failed.", service.Name);
+            return new { service.Name, Status = "Unhealthy", Healthy = false, ResponseBody = "Connection failed" };
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(ex, "Gateway readiness probe to {Service} timed out.", service.Name);
+            return new { service.Name, Status = "Unhealthy", Healthy = false, ResponseBody = "Connection timed out" };
+        }
+    }));
+
+    var hasUnreadyService = checks.Any(check => !check.Healthy);
+    return hasUnreadyService
+        ? Results.Json(new { status = "Degraded", services = checks }, statusCode: StatusCodes.Status503ServiceUnavailable)
+        : Results.Ok(new { status = "Healthy", services = checks });
+});
+
 // Dòng này đặt MapReverseProxy sau /health để route /health luôn được xử lý bởi gateway trước khi proxy request đi downstream.
 // Nếu reverse proxy được đặt lên trước, /health có thể bị định tuyến sai ra service không có endpoint tương ứng và đánh giá sai.
 app.MapReverseProxy();

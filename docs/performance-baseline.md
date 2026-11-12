@@ -263,3 +263,20 @@ Phần cải thiện đo được trên warm cache là nhỏ vì cả Redis và 
 The latest full-suite run passed 132/134 tests. The only failures were `PlaceOrder_EndToEnd_SagaConfirmsOrderAndPersistsCompletedState` (the 15-second confirmation timeout) and `ChannelFull_LogsWarning_WhenAtCapacity` (the 3-minute condition timeout). Both are known timing-sensitive tests: they passed when run individually and failed under full-suite load. Their stabilization will be handled separately; neither test was changed for Day 63.
 
 See [`efcore-playbook.md`](efcore-playbook.md) for the 10 EF Core practices recorded for this project, including projections, keyset pagination, async locks, cache-aside and performance guards.
+
+## Day 65 — observability verification
+
+Verification ran on `2026-11-13` after adding structured JSON logging, Prometheus metrics, dependency readiness checks, and the Grafana dashboard:
+
+- `dotnet build ShopFlow.sln --nologo`: succeeded with 0 errors and 47 warnings. The warnings include the existing NU1603 package-resolution notices and the NU1902 OpenTelemetry exporter advisory.
+- `dotnet test ShopFlow.sln --nologo`: **143/143 passed** in one full-suite run.
+- `docker compose config --quiet`: passed. Prometheus and Grafana started from Compose; their health endpoints returned `200`.
+- All four API `/health/ready` and `/metrics` endpoints returned `200`. The metrics responses included `shopflow_orders_created_total` and `shopflow_saga_runs_total`.
+- Prometheus reported all five active scrape targets healthy (the four APIs and Prometheus itself). Queries returned samples for `http_requests_total` (1 series), `http_request_duration_seconds_bucket` (15 bucket series), `shopflow_orders_created_total` (1 series), and `shopflow_saga_runs_total` (3 outcome series).
+- Grafana's provisioned `ShopFlow` dashboard loaded through its API with four panels: HTTP request rate, HTTP p99 latency, Orders created, and Saga runs by outcome.
+- A real Order API Serilog event parsed as JSON and included `Properties.Service = shopflow-order`.
+- During the outage smoke test, stopping PostgreSQL changed Order readiness to `503`; after starting PostgreSQL, Docker reported it healthy and Order readiness returned to `200`.
+
+The Inventory and Payment smoke-test processes used temporary process-only connection-string overrides derived from the verified local Order database configuration because their checked-in local settings omit a password. No database credentials or source connection settings were changed. Those temporary API processes were stopped after verification; PostgreSQL was restarted and left healthy.
+
+The RabbitMQ health-check package is `9.0.0` (net8.0) to match RabbitMQ.Client `7.0.0`; its `8.0.2` release depends on RabbitMQ.Client `6.8.1` and failed at runtime. See [`observability.md`](./observability.md) for the package details.
