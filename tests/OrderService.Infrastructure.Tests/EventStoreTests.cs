@@ -22,7 +22,7 @@ public sealed class EventStoreTests
 
     private static string ConnectionString =>
         Environment.GetEnvironmentVariable("ConnectionStrings__OrderDb")
-        ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=ShopFlow123!;";
+        ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=shopflow123;";
 
     private static OrderDbContext CreateContext()
     {

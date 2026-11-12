@@ -1,6 +1,8 @@
 // File này chứa processor nền cho outbox của OrderService, tách producer poll DB khỏi consumer publish và chuẩn bị cho Day 52/57 nâng cấp transport và graceful shutdown.
 // Layer Infrastructure này sẽ chạy như background service để đọc message chưa xử lý, publish ra RabbitMQ và đánh dấu ProcessedAt trong database.
+// Day 61 gom các ID đã publish thành batch và flush ProcessedAt bằng một UPDATE cuối chu kỳ.
 
+using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -51,6 +53,7 @@ public sealed class OutboxProcessor : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IOutboxPublisher _publisher;
     private readonly Channel<OutboxMessage> _channel;
+    private readonly ConcurrentDictionary<Guid, byte> _queuedMessageIds = new();
     private readonly SemaphoreSlim _publishSemaphore;
     private readonly ILogger<OutboxProcessor> _logger;
     private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(5);
@@ -152,32 +155,44 @@ public sealed class OutboxProcessor : BackgroundService
         await using var scope = _scopeFactory.CreateAsyncScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
 
+        var queuedMessageIds = _queuedMessageIds.Keys.ToArray();
         var pendingMessages = await dbContext.OutboxMessages
             .Where(x => x.ProcessedAt == null)
+            .Where(x => !queuedMessageIds.Contains(x.Id))
             .OrderBy(x => x.OccurredOn)
             .Take(10)
             .ToListAsync(cancellationToken);
 
         foreach (var message in pendingMessages)
         {
-            if (_channel.Reader.Count >= ChannelCapacity)
-            {
-                _logger.LogWarning(
-                    "channel full: capacity {Capacity} reached while buffering event {EventType}; waiting until consumer drains to preserve backpressure and avoid OOM.",
-                    ChannelCapacity,
-                    message.EventType);
-            }
-
-            if (_channel.Writer.TryWrite(message))
+            if (!_queuedMessageIds.TryAdd(message.Id, 0))
             {
                 continue;
             }
 
-            _logger.LogWarning(
-                "channel full: capacity {Capacity} reached while buffering event {EventType}; waiting until consumer drains to preserve backpressure and avoid OOM.",
-                ChannelCapacity,
-                message.EventType);
-            await _channel.Writer.WriteAsync(message, cancellationToken);
+            var enqueued = false;
+            try
+            {
+                if (_channel.Writer.TryWrite(message))
+                {
+                    enqueued = true;
+                    continue;
+                }
+
+                _logger.LogWarning(
+                    "channel full: capacity {Capacity} reached while buffering event {EventType}; waiting until consumer drains to preserve backpressure and avoid OOM.",
+                    ChannelCapacity,
+                    message.EventType);
+                await _channel.Writer.WriteAsync(message, cancellationToken);
+                enqueued = true;
+            }
+            finally
+            {
+                if (!enqueued)
+                {
+                    _queuedMessageIds.TryRemove(message.Id, out _);
+                }
+            }
         }
     }
 
@@ -187,16 +202,44 @@ public sealed class OutboxProcessor : BackgroundService
         {
             while (await _channel.Reader.WaitToReadAsync(stoppingToken))
             {
-                while (_channel.Reader.TryRead(out var message))
+                var processedIds = new List<Guid>();
+                var attemptedIds = new List<Guid>();
+                try
                 {
-                    await _publishSemaphore.WaitAsync(stoppingToken);
+                    while (_channel.Reader.TryRead(out var message))
+                    {
+                        attemptedIds.Add(message.Id);
+                        await _publishSemaphore.WaitAsync(stoppingToken);
+                        try
+                        {
+                            if (await PublishAsync(message, stoppingToken))
+                            {
+                                processedIds.Add(message.Id);
+                            }
+                        }
+                        finally
+                        {
+                            _publishSemaphore.Release();
+                        }
+                    }
+                }
+                finally
+                {
+                    var flushed = false;
                     try
                     {
-                        await PublishAsync(message, stoppingToken);
+                        await FlushProcessedAsync(processedIds, CancellationToken.None);
+                        flushed = true;
                     }
                     finally
                     {
-                        _publishSemaphore.Release();
+                        foreach (var messageId in attemptedIds)
+                        {
+                            if (flushed || !processedIds.Contains(messageId))
+                            {
+                                _queuedMessageIds.TryRemove(messageId, out _);
+                            }
+                        }
                     }
                 }
             }
@@ -210,21 +253,66 @@ public sealed class OutboxProcessor : BackgroundService
 
     private async Task DrainChannelAsync(CancellationToken cancellationToken)
     {
-        while (_channel.Reader.TryRead(out var message))
+        var processedIds = new List<Guid>();
+        var attemptedIds = new List<Guid>();
+        try
         {
-            await _publishSemaphore.WaitAsync(cancellationToken);
+            while (_channel.Reader.TryRead(out var message))
+            {
+                attemptedIds.Add(message.Id);
+                await _publishSemaphore.WaitAsync(cancellationToken);
+                try
+                {
+                    if (await PublishAsync(message, cancellationToken))
+                    {
+                        processedIds.Add(message.Id);
+                    }
+                }
+                finally
+                {
+                    _publishSemaphore.Release();
+                }
+            }
+        }
+        finally
+        {
+            var flushed = false;
             try
             {
-                await PublishAsync(message, cancellationToken);
+                await FlushProcessedAsync(processedIds, CancellationToken.None);
+                flushed = true;
             }
             finally
             {
-                _publishSemaphore.Release();
+                foreach (var messageId in attemptedIds)
+                {
+                    if (flushed || !processedIds.Contains(messageId))
+                    {
+                        _queuedMessageIds.TryRemove(messageId, out _);
+                    }
+                }
             }
         }
     }
 
-    private async Task PublishAsync(OutboxMessage message, CancellationToken stoppingToken)
+    private async Task<int> FlushProcessedAsync(IReadOnlyCollection<Guid> processedIds, CancellationToken cancellationToken)
+    {
+        if (processedIds.Count == 0)
+        {
+            return 0;
+        }
+
+        var processedAt = DateTime.UtcNow;
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+
+        // Crash sau publish/saga nhưng trước flush sẽ khiến message được phát lại; at-least-once đã là semantics từ Day 57, còn saga bỏ qua lần chạy lại nhờ guard Completed của Day 52.
+        return await dbContext.OutboxMessages
+            .Where(message => processedIds.Contains(message.Id) && message.ProcessedAt == null)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(message => message.ProcessedAt, processedAt), cancellationToken);
+    }
+
+    private async Task<bool> PublishAsync(OutboxMessage message, CancellationToken stoppingToken)
     {
         try
         {
@@ -236,7 +324,7 @@ public sealed class OutboxProcessor : BackgroundService
 
             if (persistedMessage is null || persistedMessage.ProcessedAt is not null)
             {
-                return;
+                return false;
             }
 
             // Đẩy message to broker trước khi trigger saga và set ProcessedAt: nếu broker lỗi, message vẫn còn ở DB và sẽ được poll lại sau.
@@ -258,18 +346,18 @@ public sealed class OutboxProcessor : BackgroundService
                 }
             }
 
-            persistedMessage.ProcessedAt = DateTime.UtcNow;
-            await dbContext.SaveChangesAsync(stoppingToken);
-
             Metrics.RecordProcessed(persistedMessage.OccurredOn);
+            return true;
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-            // Khi shutdown, không đánh dấu ProcessedAt vì muốn giữ message lại cho lần xử lý sau; worker chỉ dừng sau khi drain hết queue.
+            // Khi shutdown, message chưa vào batch flush nên vẫn được poll lại để giữ semantics at-least-once.
+            return false;
         }
         catch (Exception exception)
         {
             _logger.LogError(exception, "Không thể publish message outbox {MessageId}.", message.Id);
+            return false;
         }
     }
 }

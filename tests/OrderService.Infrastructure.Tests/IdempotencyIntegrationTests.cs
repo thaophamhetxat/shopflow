@@ -30,7 +30,7 @@ public sealed class IdempotencyIntegrationTests
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["ConnectionStrings:OrderDb"] = Environment.GetEnvironmentVariable("ConnectionStrings__OrderDb")
-                    ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=ShopFlow123!;",
+                    ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=shopflow123;",
                 ["ConnectionStrings:Redis"] = "localhost:6379"
             })
             .Build();

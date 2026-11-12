@@ -1,8 +1,11 @@
 // File này chứa implementation repository cho Order trong Infrastructure của OrderService.
 // Tạo ở Day 42 để đưa lưu trữ Aggregate Order xuống PostgreSQL thật bằng EF Core, phục vụ việc đọc lại order trong Day 45-47.
 // Day 46 bổ sung read model detail/list; Day 60 bảo đảm mỗi query đọc chỉ chạy một SQL command và map các value object ở memory.
+// Day 61 thêm compiled detail query và keyset cursor chứa CreatedAt/OrderId, giữ tie-breaker Guid ở memory.
 
+using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 using OrderService.Application.Queries;
 using OrderService.Domain.Aggregates;
 using OrderService.Domain.Entities;
@@ -18,6 +21,9 @@ namespace OrderService.Infrastructure.Repositories;
 /// </summary>
 public sealed class OrderRepository : IOrderRepository, IOrderReadModelRepository
 {
+    // Delegate static readonly để EF biên dịch expression một lần cho cả repository thay vì mỗi lần tạo instance.
+    private static readonly ConditionalWeakTable<IModel, Func<OrderDbContext, OrderId, CancellationToken, Task<Order?>>> CompiledGetOrderDetailQueries = new();
+
     private readonly OrderDbContext _dbContext;
 
     /// <summary>
@@ -65,10 +71,15 @@ public sealed class OrderRepository : IOrderRepository, IOrderReadModelRepositor
     /// <returns>OrderDetailDto nếu order tồn tại, otherwise null.</returns>
     public async Task<OrderDetailDto?> GetOrderDetailAsync(OrderId id, CancellationToken cancellationToken = default)
     {
-        var order = await _dbContext.Orders
-            .AsNoTracking()
-            .Include(currentOrder => currentOrder.Items)
-            .FirstOrDefaultAsync(currentOrder => currentOrder.Id == id, cancellationToken);
+        // Compiled query cache biểu thức EF ngay khi class được tạo, giảm chi phí biên dịch mỗi lần đọc detail bằng `OrderId`.
+        var compiledQuery = CompiledGetOrderDetailQueries.GetValue(
+            _dbContext.Model,
+            static _ => EF.CompileAsyncQuery((OrderDbContext dbContext, OrderId orderId, CancellationToken token) =>
+                dbContext.Orders
+                    .AsNoTracking()
+                    .Include(currentOrder => currentOrder.Items)
+                    .FirstOrDefault(currentOrder => currentOrder.Id == orderId)));
+        var order = await compiledQuery(_dbContext, id, cancellationToken);
 
         if (order is null)
         {
@@ -105,13 +116,15 @@ public sealed class OrderRepository : IOrderRepository, IOrderReadModelRepositor
 
     /// <summary>
     /// Đọc danh sách summary theo customer bằng keyset cursor, không dùng OFFSET vì sau trang đầu phía sau cần ổn định khi có đơn mới chèn vào giữa lúc phân trang.
+    /// Cursor mới mang cả `CreatedAt` và `OrderId`, do đó SQL chỉ lọc theo thời gian create và phần tie-breaker `Guid.CompareTo` được xử lý ở memory sau khi materialize.
     /// </summary>
     /// <param name="customerId">CustomerId cần lấy list order.</param>
-    /// <param name="cursor">OrderId của đơn cuối trang trước, null nếu là trang đầu.</param>
+    /// <param name="cursorCreatedAt">CreatedAt của item cuối trang trước, null nếu là trang đầu.</param>
+    /// <param name="cursorOrderId">OrderId của item cuối trang trước, dùng làm tie-breaker khi cùng CreatedAt.</param>
     /// <param name="pageSize">Kích thước trang tối đa, được clamp ở handler và trong method này để giữ an toàn.</param>
     /// <param name="cancellationToken">Token hủy nếu request bị hủy.</param>
     /// <returns>Danh sách OrderSummaryDto theo thứ tự CreatedAt giảm dần, OrderId giảm dần, tối đa pageSize item.</returns>
-    public async Task<IReadOnlyList<OrderSummaryDto>> ListOrderSummariesByCustomerAsync(CustomerId customerId, OrderId? cursor, int pageSize, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<OrderSummaryDto>> ListOrderSummariesByCustomerAsync(CustomerId customerId, DateTime? cursorCreatedAt, OrderId? cursorOrderId, int pageSize, CancellationToken cancellationToken = default)
     {
         var boundedPageSize = Math.Clamp(pageSize, 1, 50);
 
@@ -120,34 +133,28 @@ public sealed class OrderRepository : IOrderRepository, IOrderReadModelRepositor
             .Include(currentOrder => currentOrder.Items)
             .Where(currentOrder => currentOrder.CustomerId == customerId);
 
-        if (cursor is OrderId cursorOrderId)
+        if (cursorCreatedAt is DateTime createdAt)
         {
-            // SQL chỉ so sánh keyset `CreatedAt` trong subquery này; tie-breaker `Guid.CompareTo` phải được lọc ở memory sau khi materialize.
-            query = query.Where(currentOrder =>
-                currentOrder.CreatedAt <= _dbContext.Orders
-                    .AsNoTracking()
-                    .Where(current => current.Id == cursorOrderId)
-                    .Select(current => current.CreatedAt)
-                    .FirstOrDefault());
+            // SQL chỉ có thể so sánh key chính CreatedAt; tie-breaker OrderId phải giữ ở memory vì EF Core không dịch `Guid.CompareTo` xuống SQL trên value object.
+            query = query.Where(currentOrder => currentOrder.CreatedAt <= createdAt);
         }
 
-        var matchedOrders = await query
+        IQueryable<Order> orderedQuery = query
             .OrderByDescending(currentOrder => currentOrder.CreatedAt)
-            .ThenByDescending(currentOrder => currentOrder.Id)
-            .Take(boundedPageSize + 1)
-            .ToListAsync(cancellationToken);
+            .ThenByDescending(currentOrder => currentOrder.Id);
 
-        if (cursor is OrderId cursorOrderIdForMemory)
+        if (cursorCreatedAt is null)
         {
-            var cursorOrder = matchedOrders.FirstOrDefault(currentOrder => currentOrder.Id == cursorOrderIdForMemory);
-            if (cursorOrder is null)
-            {
-                return Array.Empty<OrderSummaryDto>();
-            }
+            orderedQuery = orderedQuery.Take(boundedPageSize);
+        }
 
+        var matchedOrders = await orderedQuery.ToListAsync(cancellationToken);
+
+        if (cursorCreatedAt is DateTime cursorDate && cursorOrderId is OrderId cursorKey)
+        {
             matchedOrders = matchedOrders
-                .Where(currentOrder => currentOrder.CreatedAt < cursorOrder.CreatedAt ||
-                    (currentOrder.CreatedAt == cursorOrder.CreatedAt && currentOrder.Id.Value.CompareTo(cursorOrderIdForMemory.Value) < 0))
+                .Where(currentOrder => currentOrder.CreatedAt < cursorDate ||
+                    (currentOrder.CreatedAt == cursorDate && currentOrder.Id.Value.CompareTo(cursorKey.Value) < 0))
                 .ToList();
         }
 

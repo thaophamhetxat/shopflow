@@ -1,5 +1,7 @@
 // File này chứa route group cho OrderService.API, gắn logic v1/v2 vào Endpoint minimal API và map exception sang Problem Details chuẩn.
 // Tạo ở Day 47 để client gọi POST/GET/DELETE /api/v1/orders và GET /api/v2/orders/{id} theo contract đã được chốt.
+// Day 61 nhận cursor keyset Base64Url mang CreatedAt và OrderId; response payload không đổi.
+
 using FluentValidation;
 using MediatR;
 using Microsoft.AspNetCore.Http;
@@ -74,7 +76,7 @@ public static class OrderEndpoints
             }
         });
 
-        // GET /api/v1/orders: list theo customerId với cursor và pageSize, trả 200 khi hợp lệ, 422 khi input không parse được hoặc thiếu tham số bắt buộc.
+        // GET /api/v1/orders: cursor trang sau là Base64Url(UTF-8("CreatedAt theo O|OrderId")) từ item cuối trang; giữ response shape, sai input trả 422.
         v1.MapGet("/orders", async (HttpContext httpContext, IMediator mediator, CancellationToken cancellationToken) =>
         {
             try
@@ -89,19 +91,13 @@ public static class OrderEndpoints
                     });
                 }
 
-                Guid? cursorOrderId = null;
                 var cursorRaw = query["cursor"].FirstOrDefault();
-                if (!string.IsNullOrWhiteSpace(cursorRaw) && !Guid.TryParse(cursorRaw, out var parsedCursor))
+                if (!string.IsNullOrWhiteSpace(cursorRaw) && !OrderListCursor.TryDecode(cursorRaw, out _, out _))
                 {
                     throw new ValidationException(new[]
                     {
                         new FluentValidation.Results.ValidationFailure("cursor", "cursor không hợp lệ.")
                     });
-                }
-
-                if (Guid.TryParse(cursorRaw, out var validCursor))
-                {
-                    cursorOrderId = validCursor;
                 }
 
                 var pageSize = 20;
@@ -114,7 +110,7 @@ public static class OrderEndpoints
                     });
                 }
 
-                var result = await mediator.Send(new ListOrdersByCustomerQuery(customerId, cursorOrderId, pageSize), cancellationToken);
+                var result = await mediator.Send(new ListOrdersByCustomerQuery(customerId, cursorRaw, pageSize), cancellationToken);
                 return Results.Ok(result);
             }
             catch (Exception exception)

@@ -119,6 +119,10 @@ namespace OrderService.Infrastructure.Persistence.Migrations
                     b.HasIndex("Status")
                         .HasDatabaseName("ix_orders_status");
 
+                    b.HasIndex("CustomerId", "CreatedAt", "Id")
+                        .IsDescending(false, true, true)
+                        .HasDatabaseName("ix_orders_customer_created_at_id");
+
                     b.ToTable("orders", (string)null);
                 });
 

@@ -1,6 +1,7 @@
 // File này chứa extension method đăng ký MediatR cho OrderService.Application.
 // Tạo ở Day 41 để layer Application có thể tự đăng ký handler và query/command khi service bắt đầu chạy.
 // Application layer này giữ các use case và DI, không chứa logic persistence.
+// Day 61 cập nhật in-memory read model để nhận cursor CreatedAt và OrderId như repository thật.
 
 using System.Collections.Concurrent;
 using FluentValidation;
@@ -96,7 +97,7 @@ public static class DependencyInjection
                     item.LineTotal.Amount)).ToList()));
         }
 
-        public Task<IReadOnlyList<OrderSummaryDto>> ListOrderSummariesByCustomerAsync(CustomerId customerId, OrderId? cursor, int pageSize, CancellationToken cancellationToken = default)
+        public Task<IReadOnlyList<OrderSummaryDto>> ListOrderSummariesByCustomerAsync(CustomerId customerId, DateTime? cursorCreatedAt, OrderId? cursorOrderId, int pageSize, CancellationToken cancellationToken = default)
         {
             var items = _orders.Values
                 .Where(order => order.CustomerId == customerId)
@@ -104,16 +105,12 @@ public static class DependencyInjection
                 .ThenByDescending(order => order.Id)
                 .ToList();
 
-            if (cursor is OrderId cursorOrderId)
+            if (cursorCreatedAt is DateTime cursorDate && cursorOrderId is OrderId cursorKey)
             {
-                var cursorOrder = items.FirstOrDefault(order => order.Id == cursorOrderId);
-                if (cursorOrder is not null)
-                {
-                    items = items
-                        .Where(order => order.CreatedAt < cursorOrder.CreatedAt ||
-                            (order.CreatedAt == cursorOrder.CreatedAt && order.Id.Value < cursorOrderId.Value))
-                        .ToList();
-                }
+                items = items
+                    .Where(order => order.CreatedAt < cursorDate ||
+                        (order.CreatedAt == cursorDate && order.Id.Value.CompareTo(cursorKey.Value) < 0))
+                    .ToList();
             }
 
             var summaries = items

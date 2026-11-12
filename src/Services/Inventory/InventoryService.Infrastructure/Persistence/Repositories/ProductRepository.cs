@@ -1,6 +1,7 @@
 // File này triển khai repository Product bằng EF Core cho InventoryService.
 // Tạo ở Day 48 để command/query đọc và lưu aggregate mà không dùng Include vì Product không có collection con.
 // Gateway Day 49 và Saga Day 52 sẽ truy cập tồn kho qua hợp đồng repository này.
+// Day 61 biên dịch stock-check query; Reserve vẫn giữ transaction và SELECT FOR UPDATE như trước.
 
 using InventoryService.Application;
 using InventoryService.Domain.Aggregates;
@@ -15,6 +16,13 @@ namespace InventoryService.Infrastructure.Persistence.Repositories;
 /// </summary>
 public sealed class ProductRepository : IProductRepository
 {
+    // Delegate static readonly để chỉ biên dịch expression một lần và tái sử dụng qua mọi instance repository.
+    private static readonly Func<InventoryDbContext, ProductId, int, CancellationToken, Task<bool>> CompiledCheckStock =
+        EF.CompileAsyncQuery((InventoryDbContext dbContext, ProductId productId, int quantity, CancellationToken cancellationToken) =>
+            dbContext.Products
+                .AsNoTracking()
+                .Any(product => product.Id == productId && product.StockQuantity >= quantity));
+
     private readonly InventoryDbContext _dbContext;
 
     /// <summary>
@@ -46,11 +54,8 @@ public sealed class ProductRepository : IProductRepository
     /// <returns>True khi kho đủ; ngược lại false.</returns>
     public ValueTask<bool> CheckStockAsync(ProductId id, int quantity, CancellationToken cancellationToken = default)
     {
-        // Không load aggregate hay trả về entity; query này chỉ cần AnyAsync với filter đúng semantics cho stock check nhanh.
-        // Chúng ta không nối method này vào Reserve để giữ nguyên quy tắc aggregate guard và tránh query thừa trên đường success.
-        return new ValueTask<bool>(_dbContext.Products
-            .AsNoTracking()
-            .AnyAsync(product => product.Id == id && product.StockQuantity >= quantity, cancellationToken));
+        // Compiled query cache biểu thức EF Core để tránh re-bien dịch mỗi lần stock check; không nối vào Reserve vì Day 56/58 yêu cầu reserve vẫn dùng transaction và FOR UPDATE riêng.
+        return new ValueTask<bool>(CompiledCheckStock(_dbContext, id, quantity, cancellationToken));
     }
 
     /// <summary>

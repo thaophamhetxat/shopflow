@@ -1,6 +1,7 @@
 // File này chứa evidence Day 57 cho producer/consumer pipeline với bounded channel và RabbitMQ mock,
 // để kiểm tra backpressure, graceful shutdown và metric của OutboxProcessor trong môi trường DB thật không dùng InMemory.
 // Layer Test dùng cùng `OrderDbContext` real như OutboxIntegrationTests để đảm bảo mỗi scenario phản ánh hành vi thực tế từ PostgreSQL.
+// Day 61 xác nhận nhiều ProcessedAt được flush trong đúng một bulk UPDATE.
 
 using System.Collections.Concurrent;
 using Microsoft.EntityFrameworkCore;
@@ -198,6 +199,72 @@ public sealed class OutboxPipelineTests
         }
         finally
         {
+            DatabaseLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Evidence Day 61: processor đánh dấu năm message trong một câu UPDATE bằng ExecuteUpdateAsync ở cuối chu kỳ.
+    /// </summary>
+    [Fact]
+    public async Task OutboxProcessor_MarksProcessedMessages_WithSingleBulkUpdate()
+    {
+        await DatabaseLock.WaitAsync();
+        try
+        {
+            var sqlLogs = new List<string>();
+            await using var seedContext = CreateContext();
+            await seedContext.Database.MigrateAsync();
+            await ClearOutboxAsync(seedContext);
+            await SeedOutboxMessagesAsync(seedContext, 5);
+
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddDbContext<OrderDbContext>(options =>
+                options.UseNpgsql(ConnectionString)
+                    .LogTo(
+                        message =>
+                        {
+                            lock (sqlLogs)
+                            {
+                                sqlLogs.Add(message);
+                            }
+                        },
+                        new[] { DbLoggerCategory.Database.Command.Name },
+                        LogLevel.Information));
+            using var provider = services.BuildServiceProvider();
+            var processor = new OutboxProcessor(
+                provider.GetRequiredService<IServiceScopeFactory>(),
+                new FakeOutboxPublisher(),
+                provider.GetRequiredService<ILogger<OutboxProcessor>>());
+
+            lock (sqlLogs)
+            {
+                sqlLogs.Clear();
+            }
+
+            await processor.ProcessPendingAsync();
+
+            await using var verificationContext = CreateContext();
+            var persistedMessages = await verificationContext.OutboxMessages.AsNoTracking().ToListAsync();
+            Assert.Equal(5, persistedMessages.Count);
+            Assert.All(persistedMessages, message => Assert.NotNull(message.ProcessedAt));
+
+            int updateCommandCount;
+            lock (sqlLogs)
+            {
+                updateCommandCount = sqlLogs.Count(message =>
+                    message.Contains("Executed DbCommand", StringComparison.Ordinal) &&
+                    message.Contains("UPDATE", StringComparison.OrdinalIgnoreCase) &&
+                    message.Contains("outbox_messages", StringComparison.OrdinalIgnoreCase));
+            }
+
+            Assert.Equal(1, updateCommandCount);
+        }
+        finally
+        {
+            await using var cleanupContext = CreateContext();
+            await ClearOutboxAsync(cleanupContext);
             DatabaseLock.Release();
         }
     }

@@ -1,10 +1,12 @@
 // File này kiểm thử Order API thật qua HTTP với PostgreSQL 16 do Testcontainers dựng riêng.
 // Các scenario đi qua endpoint, MediatR, validator, repository và Redis idempotency đang chạy thật.
 // Tạo ở Day 50 để làm bằng chứng integration cho Order trước khi bắt đầu Saga ở Day 52.
+// Day 61 cập nhật smoke coverage phân trang API sang cursor Base64Url mà không đổi response shape.
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using OrderService.API.Dtos;
+using OrderService.Application.Queries;
 
 namespace OrderService.IntegrationTests;
 
@@ -71,8 +73,8 @@ public sealed class OrderApiIntegrationTests : IClassFixture<ShopFlowWebApplicat
         var secondOrderId = await ReadOrderIdAsync(secondResponse);
         Assert.Equal(firstOrderId, secondOrderId);
 
-        var orderIds = await GetOrderIdsAsync($"/api/v1/orders?customerId={customerId}&pageSize=50");
-        Assert.Equal(new[] { firstOrderId }, orderIds);
+        var orderIds = await GetOrderPageAsync($"/api/v1/orders?customerId={customerId}&pageSize=50");
+        Assert.Equal(new[] { firstOrderId }, orderIds.Select(item => item.OrderId));
     }
 
     [Fact]
@@ -127,16 +129,16 @@ public sealed class OrderApiIntegrationTests : IClassFixture<ShopFlowWebApplicat
             expectedOrderIds.Add(await ReadOrderIdAsync(response));
         }
 
-        var firstPage = await GetOrderIdsAsync($"/api/v1/orders?customerId={customerId}&pageSize=2");
+        var firstPage = await GetOrderPageAsync($"/api/v1/orders?customerId={customerId}&pageSize=2");
         Assert.Equal(2, firstPage.Count);
-        var secondPage = await GetOrderIdsAsync(
-            $"/api/v1/orders?customerId={customerId}&cursor={firstPage[^1]}&pageSize=2");
+        var secondCursor = OrderListCursor.Encode(firstPage[^1].CreatedAt, firstPage[^1].OrderId);
+        var secondPage = await GetOrderPageAsync($"/api/v1/orders?customerId={customerId}&cursor={secondCursor}&pageSize=2");
         Assert.Equal(2, secondPage.Count);
-        var thirdPage = await GetOrderIdsAsync(
-            $"/api/v1/orders?customerId={customerId}&cursor={secondPage[^1]}&pageSize=2");
+        var thirdCursor = OrderListCursor.Encode(secondPage[^1].CreatedAt, secondPage[^1].OrderId);
+        var thirdPage = await GetOrderPageAsync($"/api/v1/orders?customerId={customerId}&cursor={thirdCursor}&pageSize=2");
         Assert.Single(thirdPage);
 
-        var actualOrderIds = firstPage.Concat(secondPage).Concat(thirdPage).ToList();
+        var actualOrderIds = firstPage.Select(item => item.OrderId).Concat(secondPage.Select(item => item.OrderId)).Concat(thirdPage.Select(item => item.OrderId)).ToList();
         Assert.Equal(5, actualOrderIds.Distinct().Count());
         Assert.Equal(expectedOrderIds.OrderBy(id => id), actualOrderIds.OrderBy(id => id));
     }
@@ -243,7 +245,7 @@ public sealed class OrderApiIntegrationTests : IClassFixture<ShopFlowWebApplicat
     /// </summary>
     /// <param name="requestUri">Đường dẫn list kèm customerId và tham số phân trang.</param>
     /// <returns>Mã đơn theo thứ tự thật API trả về.</returns>
-    private async Task<List<Guid>> GetOrderIdsAsync(string requestUri)
+    private async Task<List<(Guid OrderId, DateTime CreatedAt)>> GetOrderPageAsync(string requestUri)
     {
         using var response = await _client.GetAsync(requestUri);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -251,7 +253,9 @@ public sealed class OrderApiIntegrationTests : IClassFixture<ShopFlowWebApplicat
         using var document = await ReadJsonAsync(response);
         return document.RootElement
             .EnumerateArray()
-            .Select(order => order.GetProperty("orderId").GetGuid())
+            .Select(order => (
+                OrderId: order.GetProperty("orderId").GetGuid(),
+                CreatedAt: order.GetProperty("createdAt").GetDateTime()))
             .ToList();
     }
 

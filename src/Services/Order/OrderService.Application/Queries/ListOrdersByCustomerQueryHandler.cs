@@ -1,3 +1,8 @@
+// File này xử lý query keyset list order tại Application layer.
+// Tạo ở Day 46; Day 61 giải mã Base64Url và chuyển cặp cursor cho read-model repository.
+// API dùng kết quả validation để giữ status 422 cho cursor không hợp lệ.
+
+using FluentValidation;
 using MediatR;
 using OrderService.Domain.ValueObjects;
 
@@ -32,8 +37,32 @@ public sealed class ListOrdersByCustomerQueryHandler : IRequestHandler<ListOrder
         var boundedPageSize = Math.Clamp(request.PageSize, 1, 50);
 
         var customerId = CustomerId.From(request.CustomerId);
-        OrderId? cursor = request.CursorOrderId is Guid cursorOrderId ? OrderId.From(cursorOrderId) : null;
 
-        return await _orderRepository.ListOrderSummariesByCustomerAsync(customerId, cursor, boundedPageSize, cancellationToken);
+        DateTime cursorCreatedAt = default;
+        Guid cursorOrderId = Guid.Empty;
+        var hasValidCursor = false;
+
+        if (!string.IsNullOrWhiteSpace(request.Cursor))
+        {
+            if (!OrderListCursor.TryDecode(request.Cursor, out cursorCreatedAt, out cursorOrderId))
+            {
+                throw new ValidationException(new[]
+                {
+                    new FluentValidation.Results.ValidationFailure("cursor", "cursor không hợp lệ.")
+                });
+            }
+
+            hasValidCursor = true;
+        }
+
+        var decodedCursorCreatedAt = hasValidCursor ? (DateTime?)cursorCreatedAt : null;
+        var decodedCursorOrderId = hasValidCursor ? (OrderId?)OrderId.From(cursorOrderId) : null;
+
+        return await _orderRepository.ListOrderSummariesByCustomerAsync(
+            customerId,
+            decodedCursorCreatedAt,
+            decodedCursorOrderId,
+            boundedPageSize,
+            cancellationToken);
     }
 }

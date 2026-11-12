@@ -24,7 +24,7 @@ public sealed class OrderRepositoryIntegrationTests
 
     private static string ConnectionString =>
         Environment.GetEnvironmentVariable("ConnectionStrings__OrderDb")
-        ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=ShopFlow123!;";
+        ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=shopflow123;";
 
     /// <summary>
     /// T?o context theo connection string local d�ng cho database Order c?a m�i tru?ng development.

@@ -1,5 +1,6 @@
 // File này chứa 6 test unit chứng minh Day 52: saga reserve -> charge -> confirm đúng theo state machine, dừng ở FailedInventory/FailedPayment khi bước nào thất bại.
 // Layer Application dùng fake repository/client để mô phỏng từng bước mà không cần chạy Inventory/Payment thật, đủ để chứng minh logic điều phối của `OrderSaga`.
+// Day 61 cập nhật fake read-model repository theo signature cursor `(CreatedAt, OrderId)`.
 
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderService.Application.Queries;
@@ -297,7 +298,7 @@ public sealed class OrderSagaTests
             throw new NotSupportedException();
         }
 
-        public Task<IReadOnlyList<OrderSummaryDto>> ListOrderSummariesByCustomerAsync(CustomerId customerId, OrderId? cursor, int pageSize, CancellationToken cancellationToken = default)
+        public Task<IReadOnlyList<OrderSummaryDto>> ListOrderSummariesByCustomerAsync(CustomerId customerId, DateTime? cursorCreatedAt, OrderId? cursorOrderId, int pageSize, CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();
         }

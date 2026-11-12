@@ -12,6 +12,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Services\Inventory\InventoryService.Infrastructure\InventoryService.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\Services\Order\OrderService.Application\OrderService.Application.csproj" />
     <ProjectReference Include="..\..\src\Services\Order\OrderService.Infrastructure\OrderService.Infrastructure.csproj" />
   </ItemGroup>

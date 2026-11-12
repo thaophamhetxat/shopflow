@@ -22,7 +22,7 @@ public sealed class OutboxIntegrationTests
 
     private static string ConnectionString =>
         Environment.GetEnvironmentVariable("ConnectionStrings__OrderDb")
-        ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=ShopFlow123!;";
+        ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=shopflow123;";
 
     /// <summary>
     /// T?o DbContext theo connection string local c?a Order database, cho ph�p test t�ch h?p ch?y ch? khi Docker Postgres dang ho?t d?ng tr�n m�y dev.

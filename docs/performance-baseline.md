@@ -87,3 +87,117 @@ Before-counts below describe the Day 59 implementation shape recorded during the
 | `GET /payments/{id}` | 1 | 1 | One `SELECT` from `payments` filtered by id; the audit used a not-found id and still observed the single query. |
 
 Order detail and list continue to map `Money`, computed totals, and status values in memory after materialization; no non-translatable `LineTotal`, currency, or `Status.ToString()` expressions were added to SQL. Inventory and Payment command paths retain tracking while their GET handlers use dedicated `AsNoTracking()` reads.
+
+## Day 61 — keyset pagination and compiled queries
+
+### Cursor format and client usage
+
+`OrderListCursor` encodes the pair `(CreatedAt, OrderId)` as URL-safe base64 to keep pagination stable even when several orders share the same `CreatedAt`. Format: `base64url(yyyy-MM-ddTHH:mm:ss.fffffffK|{orderId})`, ví dụ `2026-11-12T10:00:00.0000000Z|f6b1...` trước khi `UTF-8` và `Base64UrlEncode`.
+
+Client tạo cursor cho trang sau bằng cách lấy item cuối của trang hiện tại, lấy `CreatedAt` và `OrderId`, rồi gọi `OrderListCursor.Encode(createdAt, orderId)`. Request `GET /api/v1/orders?customerId={customerId}&cursor={cursor}&pageSize=2` tiếp tục trả cùng response shape, chỉ khác ở giá trị `cursor` trong query string.
+
+### Endpoint benchmark
+
+Benchmark sau thay đổi chạy lúc `2026-11-12 13:40:19 +07:00` trên `http://127.0.0.1:5181`, 100 request tuần tự mỗi endpoint, 100/100 status thành công và 0 lỗi. Số trước được giữ nguyên từ bảng Day 60; không đo lại baseline trước.
+
+| Endpoint | Requests | Avg trước (ms) | Avg sau (ms) | p50 trước (ms) | p50 sau (ms) | p99 trước (ms) | p99 sau (ms) | Max trước (ms) | Max sau (ms) | Errors sau |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `POST /api/v1/orders` | 100 | 15.40 | 14.95 | 14.82 | 14.70 | 20.71 | 18.90 | 51.41 | 25.37 | 0 |
+| `GET /api/v1/orders/{id}` | 100 | 4.19 | 7.45 | 4.13 | 5.51 | 5.21 | 36.13 | 5.86 | 149.98 | 0 |
+| `GET /api/v1/orders?customerId=...&pageSize=20` | 100 | 4.22 | 6.51 | 4.20 | 5.95 | 5.04 | 14.89 | 7.85 | 50.37 | 0 |
+| `DELETE /api/v1/orders/{id}` | 100 | 14.36 | 17.77 | 14.08 | 17.11 | 24.73 | 24.46 | 27.99 | 67.47 | 0 |
+| `GET /api/v2/orders/{id}` | 100 | 3.73 | 5.20 | 3.69 | 4.77 | 4.58 | 10.69 | 4.97 | 34.91 | 0 |
+
+This single post-change run is noisy: detail/list/delete averages and tail latency were worse than Day 60, while POST improved. It is reported as measured; it is not evidence that the endpoint benchmark improved overall.
+
+### Compiled query benchmark
+
+`OrderRepository.GetOrderDetailAsync` and `ProductRepository.CheckStockAsync` use `EF.CompileAsyncQuery` static delegates. The benchmark test runs both compiled and regular EF queries against the same seeded rows and checks results for equality. Three test invocations are retained below to show the observed timing variability; no timing threshold is asserted.
+
+| Query | Run | Compiled avg / p50 (ms) | Regular avg / p50 (ms) | Avg change |
+|---|---:|---:|---:|---:|
+| GetOrderDetail (200 runs) | 1 | 2.695 / 2.621 | 2.849 / 2.709 | 5.4% faster |
+| GetOrderDetail (200 runs) | 2 | 3.041 / 2.744 | 2.835 / 2.784 | 7.3% slower |
+| GetOrderDetail (200 runs) | 3 | 2.607 / 2.371 | 3.404 / 3.197 | 23.4% faster |
+| CheckStock (1000 runs) | 1 | 1.437 / 1.348 | 1.618 / 1.540 | 11.2% faster |
+| CheckStock (1000 runs) | 2 | 1.455 / 1.369 | 2.045 / 1.977 | 28.9% faster |
+| CheckStock (1000 runs) | 3 | 1.526 / 1.475 | 1.363 / 1.312 | 12.0% slower |
+
+The measured average did not consistently reach the requested 30% improvement. EF Core already caches ordinary query compilation, and these short local database timings are sensitive to runtime/IO variance; compiled queries save some cache-lookup/expression-processing overhead, not database execution time.
+
+### Composite index and EXPLAIN evidence
+
+Migration `AddOrdersCustomerKeysetIndex` creates `(customer_id ASC, created_at DESC, id DESC)` as `ix_orders_customer_created_at_id`. The scratch database was migrated and seeded with 1000 orders for the target customer plus 110000 unrelated orders, then analyzed. The exact EF cursor-query shape logged for the test was:
+
+```sql
+SELECT o.id, o.created_at, o.customer_id, o.shipping_address, o.status, o.version,
+       o0.id, o0."OrderId", o0.product_id, o0.quantity, o0.unit_price
+FROM orders AS o
+LEFT JOIN order_items AS o0 ON o.id = o0."OrderId"
+WHERE o.customer_id = @__customerId_0 AND o.created_at <= @__createdAt_1
+ORDER BY o.created_at DESC, o.id DESC
+```
+
+For the cursor query, PostgreSQL chose the existing customer index and an in-memory sort rather than the new composite index. The observed `EXPLAIN (ANALYZE, BUFFERS)` plan on the scratch data (cutoff substituted for the EF parameter) was:
+
+```text
+Sort  (cost=1447.24..1449.80 rows=1021 width=148) (actual time=0.249..0.255 rows=74 loops=1)
+  Sort Key: o.created_at DESC, o.id DESC
+  Sort Method: quicksort  Memory: 31kB
+  Buffers: shared hit=22
+  ->  Nested Loop Left Join  (cost=16.43..1396.22 rows=1021 width=148) (actual time=0.172..0.196 rows=74 loops=1)
+        Join Filter: (o.id = o0."OrderId")
+        Buffers: shared hit=16
+        ->  Bitmap Heap Scan on orders o  (cost=16.43..1379.90 rows=1021 width=64) (actual time=0.164..0.176 rows=74 loops=1)
+              Recheck Cond: (customer_id = '11111111-1111-4111-8111-111111111111'::uuid)
+              Filter: (created_at <= (now() - '00:17:30'::interval))
+              Rows Removed by Filter: 926
+              Heap Blocks: exact=13
+              Buffers: shared hit=15
+              ->  Bitmap Index Scan on ix_orders_customer_id  (cost=0.00..16.18 rows=1051 width=0) (actual time=0.060..0.062 rows=1000 loops=1)
+                    Index Cond: (customer_id = '11111111-1111-4111-8111-111111111111'::uuid)
+                    Buffers: shared hit=2
+        ->  Materialize  (cost=0.00..1.00 rows=1 width=84) (actual time=0.000..0.000 rows=0 loops=74)
+              Buffers: shared hit=1
+              ->  Seq Scan on order_items o0  (cost=0.00..1.00 rows=1 width=84) (actual time=0.003..0.003 rows=0 loops=1)
+                    Buffers: shared hit=1
+Planning:
+  Buffers: shared hit=247
+Planning Time: 1.776 ms
+Execution Time: 0.323 ms
+```
+
+The bounded first-page query with the same ordering and `LIMIT 20` did use the new index:
+
+```text
+Limit  (cost=0.42..59.60 rows=20 width=148) (actual time=0.159..0.200 rows=20 loops=1)
+  Buffers: shared hit=5
+  ->  Nested Loop Left Join  (cost=0.42..3131.10 rows=1058 width=148) (actual time=0.157..0.193 rows=20 loops=1)
+        Join Filter: (o.id = o0."OrderId")
+        Buffers: shared hit=5
+        ->  Index Scan using ix_orders_customer_created_at_id on orders o  (cost=0.42..3114.23 rows=1058 width=64) (actual time=0.088..0.110 rows=20 loops=1)
+              Index Cond: (customer_id = '11111111-1111-4111-8111-111111111111'::uuid)
+              Buffers: shared hit=4
+        ->  Materialize  (cost=0.00..1.00 rows=1 width=84) (actual time=0.002..0.002 rows=0 loops=20)
+              Buffers: shared hit=1
+              ->  Seq Scan on order_items o0  (cost=0.00..1.00 rows=1 width=84) (actual time=0.017..0.017 rows=0 loops=1)
+                    Buffers: shared hit=1
+Planning:
+  Buffers: shared hit=238
+Planning Time: 5.055 ms
+Execution Time: 0.352 ms
+```
+
+The index is available and selected for bounded first-page keyset ordering; the planner did not select it for the cursor query in this distribution. Cursor pages currently materialize all rows at or before the timestamp so the in-memory `Guid.CompareTo` tie-breaker cannot skip same-timestamp rows. The scratch database `shopflow_explain` was dropped after collecting the plans.
+
+### Outbox batch update
+
+`OutboxProcessor.PublishAsync` now returns whether publishing and saga processing succeeded. The drain collects successful IDs and performs one `ExecuteUpdateAsync` at the end of the cycle (also from `finally` during drain/shutdown). A crash after publish/saga but before that flush may publish the message again; this preserves Day 57 at-least-once behavior, and the Day 52 completed-saga guard makes the repeat a no-op. The test `OutboxProcessor_MarksProcessedMessages_WithSingleBulkUpdate` verified five messages received `ProcessedAt` with exactly one UPDATE command.
+
+### Day 61 result summary
+
+- Cursor keyset: base64 URL-safe với cả `CreatedAt` và `OrderId`.
+- Compiled queries: 2 `static readonly` delegate cho order detail và stock check.
+- Composite index: migration với 3 cột và order `DESC` đúng như mô tả.
+- Outbox: bulk `ExecuteUpdateAsync` đánh dấu đã xử lý.
+- Four new tests passed: `OrderListCursor_EncodeDecode_RoundTrips`, `ListOrdersByCustomer_WithBase64Cursor_ReturnsSecondPage`, `CompiledQueries_Benchmark_ReportsTimings`, and `OutboxProcessor_MarksProcessedMessages_WithSingleBulkUpdate`.

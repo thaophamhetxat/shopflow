@@ -333,6 +333,11 @@ public sealed class OrderDbContext : DbContext
 
         // Index CreatedAt: sắp xếp và lọc theo thời gian tạo nhằm phục vụ báo cáo và timeline ở các day sau.
         orderBuilder.HasIndex(x => x.CreatedAt).HasDatabaseName("ix_orders_created_at");
+
+        // Index keyset composite cho list order theo customer: customerId làm bộ lọc chính, CreatedAt giảm dần làm key chính, Id giảm dần làm tie-breaker khi cùng timestamp.
+        orderBuilder.HasIndex(x => new { x.CustomerId, x.CreatedAt, x.Id })
+            .HasDatabaseName("ix_orders_customer_created_at_id")
+            .IsDescending(false, true, true);
     }
 
     private static string SerializeAddress(Address address)

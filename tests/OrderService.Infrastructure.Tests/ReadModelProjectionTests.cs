@@ -1,7 +1,13 @@
 // File này chứa test tích hợp cho Day 46: read model projection và keyset pagination cho OrderService.Infrastructure.
 // Tạo ở Day 46 để kiểm chứng `GetOrderById` và `ListOrdersByCustomer` chạy bằng projection SQL thật trên PostgreSQL local, không dùng mock hay OFFSET.
 // Ngày 47 sẽ dùng DTO này để phát triển endpoint API đọc dữ liệu order mà không lộ aggregate Domain ra ngoài.
+// Day 61 bổ sung evidence cursor Base64Url, compiled-query timings và kiểm tra đúng một lệnh đọc.
 
+using System.Diagnostics;
+using InventoryService.Domain.Aggregates;
+using InventoryService.Domain.ValueObjects;
+using InventoryService.Infrastructure.Persistence;
+using InventoryService.Infrastructure.Persistence.Repositories;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
@@ -15,6 +21,7 @@ using OrderService.Domain.Repositories;
 using OrderService.Domain.ValueObjects;
 using OrderService.Infrastructure.Persistence;
 using OrderService.Infrastructure.Repositories;
+using Xunit.Abstractions;
 using Xunit;
 
 namespace OrderService.Infrastructure.Tests;
@@ -26,6 +33,16 @@ namespace OrderService.Infrastructure.Tests;
 public sealed class ReadModelProjectionTests
 {
     private static readonly SemaphoreSlim DatabaseLock = DatabaseTestLock.Shared;
+    private readonly ITestOutputHelper _output;
+
+    /// <summary>
+    /// Khởi tạo test class với output sink để benchmark ghi số đo thật vào kết quả test.
+    /// </summary>
+    /// <param name="output">Output sink của xUnit.</param>
+    public ReadModelProjectionTests(ITestOutputHelper output)
+    {
+        _output = output;
+    }
 
     private static ServiceProvider BuildServiceProvider()
     {
@@ -33,7 +50,7 @@ public sealed class ReadModelProjectionTests
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["ConnectionStrings:OrderDb"] = Environment.GetEnvironmentVariable("ConnectionStrings__OrderDb")
-                    ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=ShopFlow123!;",
+                    ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=shopflow123;",
                 ["ConnectionStrings:Redis"] = "localhost:6379"
             })
             .Build();
@@ -271,8 +288,8 @@ public sealed class ReadModelProjectionTests
                 }
 
                 var firstPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, null, 2));
-                var cursorOrderId = firstPage[^1].OrderId;
-                var secondPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, cursorOrderId, 2));
+                var cursor = OrderListCursor.Encode(firstPage[^1].CreatedAt, firstPage[^1].OrderId);
+                var secondPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, cursor, 2));
 
                 Assert.Equal(2, secondPage.Count);
                 Assert.Empty(firstPage.Select(dto => dto.OrderId).Intersect(secondPage.Select(dto => dto.OrderId)));
@@ -289,6 +306,73 @@ public sealed class ReadModelProjectionTests
                     .ToListAsync();
 
                 Assert.Equal(expectedOrderIdsFromDb, secondPage.Select(dto => dto.OrderId).ToList());
+            }
+            finally
+            {
+                await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
+                provider.Dispose();
+            }
+        }
+        finally
+        {
+            DatabaseLock.Release();
+        }
+    }
+
+    // Test này chứng minh Evidence Day 61: cursor URL-safe base64 chứa CreatedAt và OrderId, trang sau trả đúng order thứ ba.
+    [Fact]
+    public async Task ListOrdersByCustomer_WithBase64Cursor_ReturnsSecondPage()
+    {
+        await DatabaseLock.WaitAsync();
+        try
+        {
+            var provider = BuildServiceProvider();
+            var idempotencyKeys = Enumerable.Range(0, 3).Select(_ => $"base64-cursor-{Guid.NewGuid():N}").ToList();
+
+            try
+            {
+                await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
+                var mediator = provider.GetRequiredService<IMediator>();
+                var customerId = Guid.NewGuid();
+
+                for (var index = 0; index < idempotencyKeys.Count; index++)
+                {
+                    await mediator.Send(new PlaceOrderCommand(
+                        customerId,
+                        $"{index + 1} Base64 Cursor Street",
+                        "Hà Nội",
+                        "Việt Nam",
+                        "100000",
+                        new List<PlaceOrderItem>
+                        {
+                            new(Guid.NewGuid(), 1, 100m + index, "USD")
+                        },
+                        idempotencyKeys[index]));
+                    await Task.Delay(25);
+                }
+
+                var firstPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, null, 2));
+                Assert.Equal(2, firstPage.Count);
+                var cursor = OrderListCursor.Encode(firstPage[^1].CreatedAt, firstPage[^1].OrderId);
+                Assert.DoesNotContain("+", cursor);
+                Assert.DoesNotContain("/", cursor);
+                Assert.DoesNotContain("=", cursor);
+
+                var secondPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, cursor, 2));
+
+                Assert.Single(secondPage);
+                Assert.NotEqual(firstPage[^1].OrderId, secondPage[0].OrderId);
+
+                using var scope = provider.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+                var expectedOrderId = await dbContext.Orders
+                    .Where(order => order.CustomerId == CustomerId.From(customerId))
+                    .OrderByDescending(order => order.CreatedAt)
+                    .ThenByDescending(order => order.Id)
+                    .Select(order => order.Id.Value)
+                    .Skip(2)
+                    .SingleAsync();
+                Assert.Equal(expectedOrderId, secondPage[0].OrderId);
             }
             finally
             {
@@ -350,10 +434,11 @@ public sealed class ReadModelProjectionTests
                 }
 
                 var firstPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, null, 1));
-                Assert.Equal(1, firstPage.Count);
+                Assert.Single(firstPage);
 
-                var secondPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, firstPage[0].OrderId, 1));
-                Assert.Equal(1, secondPage.Count);
+                var secondCursor = OrderListCursor.Encode(firstPage[0].CreatedAt, firstPage[0].OrderId);
+                var secondPage = await mediator.Send(new ListOrdersByCustomerQuery(customerId, secondCursor, 1));
+                Assert.Single(secondPage);
                 Assert.NotEqual(firstPage[0].OrderId, secondPage[0].OrderId);
                 Assert.Contains(firstPage[0].OrderId, createdOrderIds);
                 Assert.Contains(secondPage[0].OrderId, createdOrderIds);
@@ -451,7 +536,7 @@ public sealed class ReadModelProjectionTests
                 {
                     sqlLogs.Clear();
                 }
-                var firstPage = await readModel.ListOrderSummariesByCustomerAsync(CustomerId.From(customerId), null, 2);
+                var firstPage = await readModel.ListOrderSummariesByCustomerAsync(CustomerId.From(customerId), null, null, 2);
                 int firstPageCommandCount;
                 lock (sqlLogs)
                 {
@@ -464,6 +549,7 @@ public sealed class ReadModelProjectionTests
 
                 var secondPage = await readModel.ListOrderSummariesByCustomerAsync(
                     CustomerId.From(customerId),
+                    firstPage[^1].CreatedAt,
                     OrderService.Domain.ValueObjects.OrderId.From(firstPage[^1].OrderId),
                     2);
 
@@ -471,6 +557,7 @@ public sealed class ReadModelProjectionTests
                 lock (sqlLogs)
                 {
                     secondPageCommandCount = sqlLogs.Count(message => message.Contains("Executed DbCommand", StringComparison.Ordinal));
+                    _output.WriteLine(string.Join(Environment.NewLine, sqlLogs));
                 }
 
                 Assert.Single(secondPage);
@@ -555,5 +642,160 @@ public sealed class ReadModelProjectionTests
         {
             DatabaseLock.Release();
         }
+    }
+
+    // Test này chứng minh Evidence Day 61: hai query compiled/uncompiled trả kết quả giống nhau và ghi avg/p50 thật, không áp đặt ngưỡng cải thiện.
+    [Fact]
+    public async Task CompiledQueries_Benchmark_ReportsTimings()
+    {
+        await DatabaseLock.WaitAsync();
+        try
+        {
+            var provider = BuildServiceProvider();
+            var idempotencyKey = $"compiled-benchmark-{Guid.NewGuid():N}";
+            var productId = ProductId.New();
+            var inventoryConnectionString = Environment.GetEnvironmentVariable("ConnectionStrings__InventoryDb")
+                ?? throw new InvalidOperationException("Thiếu biến môi trường 'ConnectionStrings__InventoryDb' cho benchmark compiled query.");
+
+            try
+            {
+                await ResetDatabaseAsync(provider, idempotencyKey);
+                var mediator = provider.GetRequiredService<IMediator>();
+                var orderId = await mediator.Send(new PlaceOrderCommand(
+                    Guid.NewGuid(),
+                    "61 Benchmark Street",
+                    "Hà Nội",
+                    "Việt Nam",
+                    "100000",
+                    new List<PlaceOrderItem>
+                    {
+                        new(Guid.NewGuid(), 1, 100m, "USD"),
+                        new(Guid.NewGuid(), 2, 50m, "USD")
+                    },
+                    idempotencyKey));
+
+                var inventoryOptions = new DbContextOptionsBuilder<InventoryDbContext>()
+                    .UseNpgsql(inventoryConnectionString)
+                    .Options;
+                await using (var inventoryContext = new InventoryDbContext(inventoryOptions))
+                {
+                    await inventoryContext.Database.EnsureCreatedAsync();
+                    inventoryContext.Products.Add(Product.Create(productId, "Day 61 benchmark product", 10m, "USD", 10));
+                    await inventoryContext.SaveChangesAsync();
+                }
+
+                await using var compiledOrderContext = CreateLoggingDbContext(_ => { });
+                await using var uncompiledOrderContext = CreateLoggingDbContext(_ => { });
+                var compiledOrderRepository = new OrderRepository(compiledOrderContext);
+                var compiledDetail = await compiledOrderRepository.GetOrderDetailAsync(orderId);
+                var uncompiledDetail = await LoadOrderDetailUncompiledAsync(uncompiledOrderContext, orderId);
+
+                Assert.NotNull(compiledDetail);
+                Assert.NotNull(uncompiledDetail);
+                Assert.Equal(uncompiledDetail!.OrderId, compiledDetail!.OrderId);
+                Assert.Equal(uncompiledDetail.CustomerId, compiledDetail.CustomerId);
+                Assert.Equal(uncompiledDetail.Status, compiledDetail.Status);
+                Assert.Equal(uncompiledDetail.TotalAmount, compiledDetail.TotalAmount);
+                Assert.Equal(uncompiledDetail.TotalCurrency, compiledDetail.TotalCurrency);
+                Assert.Equal(uncompiledDetail.CreatedAt, compiledDetail.CreatedAt);
+                Assert.Equal(uncompiledDetail.Items, compiledDetail.Items);
+
+                await using var compiledInventoryContext = new InventoryDbContext(inventoryOptions);
+                await using var uncompiledInventoryContext = new InventoryDbContext(inventoryOptions);
+                var compiledProductRepository = new ProductRepository(compiledInventoryContext);
+                var compiledStock = await compiledProductRepository.CheckStockAsync(productId, 5);
+                var uncompiledStock = await uncompiledInventoryContext.Products
+                    .AsNoTracking()
+                    .AnyAsync(product => product.Id == productId && product.StockQuantity >= 5);
+                Assert.Equal(uncompiledStock, compiledStock);
+
+                var compiledDetailTimes = await MeasureAsync(
+                    async () => await compiledOrderRepository.GetOrderDetailAsync(orderId),
+                    200);
+                var uncompiledDetailTimes = await MeasureAsync(
+                    async () => await LoadOrderDetailUncompiledAsync(uncompiledOrderContext, orderId),
+                    200);
+                var compiledStockTimes = await MeasureAsync(
+                    async () => await compiledProductRepository.CheckStockAsync(productId, 5),
+                    1000);
+                var uncompiledStockTimes = await MeasureAsync(
+                    async () => await uncompiledInventoryContext.Products
+                        .AsNoTracking()
+                        .AnyAsync(product => product.Id == productId && product.StockQuantity >= 5),
+                    1000);
+
+                _output.WriteLine($"GetOrderDetail compiled: avg={Average(compiledDetailTimes):F3} ms, p50={Percentile50(compiledDetailTimes):F3} ms, n=200");
+                _output.WriteLine($"GetOrderDetail uncompiled: avg={Average(uncompiledDetailTimes):F3} ms, p50={Percentile50(uncompiledDetailTimes):F3} ms, n=200");
+                _output.WriteLine($"CheckStock compiled: avg={Average(compiledStockTimes):F3} ms, p50={Percentile50(compiledStockTimes):F3} ms, n=1000");
+                _output.WriteLine($"CheckStock uncompiled: avg={Average(uncompiledStockTimes):F3} ms, p50={Percentile50(uncompiledStockTimes):F3} ms, n=1000");
+            }
+            finally
+            {
+                await using var cleanupContext = new InventoryDbContext(
+                    new DbContextOptionsBuilder<InventoryDbContext>().UseNpgsql(inventoryConnectionString).Options);
+                await cleanupContext.Database.EnsureCreatedAsync();
+                await cleanupContext.Products
+                    .Where(product => product.Id == productId)
+                    .ExecuteDeleteAsync();
+                await ResetDatabaseAsync(provider, idempotencyKey);
+                provider.Dispose();
+            }
+        }
+        finally
+        {
+            DatabaseLock.Release();
+        }
+    }
+
+    private static async Task<OrderDetailDto?> LoadOrderDetailUncompiledAsync(OrderDbContext dbContext, OrderId id)
+    {
+        var order = await dbContext.Orders
+            .AsNoTracking()
+            .Include(currentOrder => currentOrder.Items)
+            .FirstOrDefaultAsync(currentOrder => currentOrder.Id == id);
+
+        if (order is null)
+        {
+            return null;
+        }
+
+        var items = order.Items.OrderBy(item => item.ProductId).ToList();
+        return new OrderDetailDto(
+            order.Id.Value,
+            order.CustomerId.Value,
+            order.Status.ToString(),
+            items.Sum(item => item.LineTotal.Amount),
+            items.Select(item => item.UnitPrice.Currency).FirstOrDefault() ?? string.Empty,
+            order.CreatedAt,
+            items.Select(item => new OrderDetailItemDto(
+                item.ProductId,
+                item.Quantity,
+                item.UnitPrice.Amount,
+                item.UnitPrice.Currency,
+                item.LineTotal.Amount)).ToList());
+    }
+
+    private static async Task<double[]> MeasureAsync(Func<Task> operation, int iterations)
+    {
+        var timings = new double[iterations];
+        for (var index = 0; index < iterations; index++)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            await operation();
+            stopwatch.Stop();
+            timings[index] = stopwatch.Elapsed.TotalMilliseconds;
+        }
+
+        return timings;
+    }
+
+    private static double Average(double[] timings)
+    {
+        return timings.Average();
+    }
+
+    private static double Percentile50(double[] timings)
+    {
+        return timings.OrderBy(value => value).ElementAt((timings.Length - 1) / 2);
     }
 }
