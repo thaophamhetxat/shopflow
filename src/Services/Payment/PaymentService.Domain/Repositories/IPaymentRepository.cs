@@ -21,12 +21,20 @@ public interface IPaymentRepository
     Task AddAsync(Payment payment, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Tìm Payment theo ID, trả null nếu không tồn tại.
+    /// Tìm Payment theo ID để thao tác ghi; cần tracking vì aggregate sẽ được sửa trong cùng DbContext.
     /// </summary>
     /// <param name="id">PaymentId cần tìm.</param>
     /// <param name="cancellationToken">Token hủy thao tác bất đồng bộ.</param>
     /// <returns>Payment nếu tìm thấy; ngược lại null.</returns>
     Task<Payment?> GetByIdAsync(PaymentId id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Tìm Payment theo ID ở chế độ đọc thuần, không theo dõi entity cho các endpoint query.
+    /// </summary>
+    /// <param name="id">PaymentId cần tìm.</param>
+    /// <param name="cancellationToken">Token hủy thao tác bất đồng bộ.</param>
+    /// <returns>Payment nếu tìm thấy; ngược lại null.</returns>
+    Task<Payment?> GetByIdReadOnlyAsync(PaymentId id, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Ghi các thay đổi đang được repository theo dõi xuống cơ sở dữ liệu.

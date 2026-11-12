@@ -101,7 +101,21 @@ public sealed class ProductRepository : IProductRepository
     /// <returns>Product nếu tồn tại; ngược lại null.</returns>
     public Task<Product?> GetByIdAsync(ProductId id, CancellationToken cancellationToken = default)
     {
+        // Dù truy vấn tại đây có thể đọc aggregate, đường ghi cần entity được theo dõi để EF phát hiện thay đổi và save đúng.
         return _dbContext.Products.FirstOrDefaultAsync(product => product.Id == id, cancellationToken);
+    }
+
+    /// <summary>
+    /// Chỉ đọc product theo ID cho endpoint query mà không kích hoạt tracking để giảm overhead và tránh sửa đổi ChangeTracker.
+    /// </summary>
+    /// <param name="id">ProductId cần tìm.</param>
+    /// <param name="cancellationToken">Token hủy thao tác.</param>
+    /// <returns>Product nếu tồn tại; ngược lại null.</returns>
+    public Task<Product?> GetByIdReadOnlyAsync(ProductId id, CancellationToken cancellationToken = default)
+    {
+        return _dbContext.Products
+            .AsNoTracking()
+            .FirstOrDefaultAsync(product => product.Id == id, cancellationToken);
     }
 
     /// <summary>

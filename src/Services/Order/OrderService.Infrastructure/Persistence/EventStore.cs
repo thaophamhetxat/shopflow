@@ -1,3 +1,7 @@
+// File này triển khai event store cho OrderService.Infrastructure trên PostgreSQL.
+// Day 55 tạo snapshot/replay; Day 60 xác nhận các truy vấn đọc event và snapshot không tracking.
+// Snapshot được tracking riêng trong AppendAsync khi cần cập nhật trong đường ghi.
+
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using OrderService.Domain;
@@ -72,6 +76,7 @@ public sealed class EventStore : IEventStore
             if (order is not null)
             {
                 var snapshotData = OrderSnapshotData.FromOrder(order);
+                // Snapshot được cập nhật hoặc thêm ngay sau lần đọc này nên cần tracking trong đường ghi AppendAsync.
                 var snapshot = await _dbContext.OrderSnapshots.FirstOrDefaultAsync(item => item.OrderId == orderId.Value, cancellationToken);
                 if (snapshot is null)
                 {

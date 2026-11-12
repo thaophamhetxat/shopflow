@@ -32,7 +32,7 @@ public sealed class GetProductQueryHandler : IRequestHandler<GetProductQuery, Pr
     /// <returns>DTO sản phẩm nếu tìm thấy; ngược lại null.</returns>
     public async Task<ProductDto?> Handle(GetProductQuery request, CancellationToken cancellationToken)
     {
-        var product = await _repository.GetByIdAsync(ProductId.From(request.ProductId), cancellationToken);
+        var product = await _repository.GetByIdReadOnlyAsync(ProductId.From(request.ProductId), cancellationToken);
         return product is null
             ? null
             : new ProductDto(

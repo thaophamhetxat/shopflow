@@ -44,7 +44,21 @@ public sealed class PaymentRepository : IPaymentRepository
     /// <returns>Payment nếu tồn tại; ngược lại null.</returns>
     public Task<Payment?> GetByIdAsync(PaymentId id, CancellationToken cancellationToken = default)
     {
+        // Dùng tracking cho đường ghi vì aggregate Payment có thể được cập nhật trong cùng DbContext trước khi SaveChangesAsync.
         return _dbContext.Payments.FirstOrDefaultAsync(payment => payment.Id == id, cancellationToken);
+    }
+
+    /// <summary>
+    /// Chỉ đọc payment cho endpoint GET mà không theo dõi entity để tránh tracking overhead và ràng buộc change tracking.
+    /// </summary>
+    /// <param name="id">PaymentId cần tìm.</param>
+    /// <param name="cancellationToken">Token hủy thao tác.</param>
+    /// <returns>Payment nếu tồn tại; ngược lại null.</returns>
+    public Task<Payment?> GetByIdReadOnlyAsync(PaymentId id, CancellationToken cancellationToken = default)
+    {
+        return _dbContext.Payments
+            .AsNoTracking()
+            .FirstOrDefaultAsync(payment => payment.Id == id, cancellationToken);
     }
 
     /// <summary>

@@ -46,6 +46,7 @@ public sealed class SagaReservationRepository : ISagaReservationRepository
     /// <inheritdoc/>
     public async Task SaveAsync(SagaReservation reservation, CancellationToken cancellationToken = default)
     {
+        // Đường ghi cần theo dõi reservation hiện hữu để cập nhật trạng thái và số lượng bằng SaveChangesAsync.
         var existing = await _dbContext.SagaReservations
             .FirstOrDefaultAsync(entry => entry.OrderId == reservation.OrderId && entry.ProductId == reservation.ProductId, cancellationToken);
 
@@ -70,6 +71,7 @@ public sealed class SagaReservationRepository : ISagaReservationRepository
     /// <inheritdoc/>
     public async Task MarkReleasedAsync(Guid orderId, Guid productId, CancellationToken cancellationToken = default)
     {
+        // MarkReleased sửa aggregate reservation vừa tải nên truy vấn này giữ tracking.
         var reservation = await _dbContext.SagaReservations
             .FirstOrDefaultAsync(entry => entry.OrderId == orderId && entry.ProductId == productId, cancellationToken);
 
@@ -85,6 +87,7 @@ public sealed class SagaReservationRepository : ISagaReservationRepository
     /// <inheritdoc/>
     public async Task UpsertAsync(Guid orderId, Guid productId, int quantity, CancellationToken cancellationToken = default)
     {
+        // Upsert sửa reservation hiện có trong cùng context, vì vậy entity cần được theo dõi.
         var existing = await _dbContext.SagaReservations
             .FirstOrDefaultAsync(entry => entry.OrderId == orderId && entry.ProductId == productId, cancellationToken);
 

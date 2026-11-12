@@ -1,6 +1,6 @@
 // File này chứa implementation repository cho Order trong Infrastructure của OrderService.
 // Tạo ở Day 42 để đưa lưu trữ Aggregate Order xuống PostgreSQL thật bằng EF Core, phục vụ việc đọc lại order trong Day 45-47.
-// Day 46 bổ sung read model projection cho detail và list summary, sử dụng Select + AsNoTracking để tránh nạp aggregate và giữ đúng 1 query SQL.
+// Day 46 bổ sung read model detail/list; Day 60 bảo đảm mỗi query đọc chỉ chạy một SQL command và map các value object ở memory.
 
 using Microsoft.EntityFrameworkCore;
 using OrderService.Application.Queries;
@@ -14,7 +14,7 @@ namespace OrderService.Infrastructure.Repositories;
 
 /// <summary>
 /// Repository Entity Framework cho Aggregate Order, dùng DbContext để thêm, tải và lưu trạng thái aggregate vào PostgreSQL.
-/// Day 46 cài thêm read model projection cho GetOrderDetailAsync và ListOrderSummariesByCustomerAsync bằng Select + AsNoTracking để đáp ứng yêu cầu query lean.
+/// Read model detail/list dùng AsNoTracking và map các giá trị không dịch được sang SQL ở memory sau khi dữ liệu đã materialize.
 /// </summary>
 public sealed class OrderRepository : IOrderRepository, IOrderReadModelRepository
 {
@@ -50,13 +50,14 @@ public sealed class OrderRepository : IOrderRepository, IOrderReadModelRepositor
     /// <returns>Order đã tải kèm items nếu tồn tại, ngược lại null.</returns>
     public async Task<Order?> GetByIdAsync(OrderId id, CancellationToken cancellationToken = default)
     {
+        // Saga và CancelOrder sửa aggregate được load ở đây, vì vậy entity phải được EF theo dõi.
         return await _dbContext.Orders
             .Include(order => order.Items)
             .FirstOrDefaultAsync(order => order.Id == id, cancellationToken);
     }
 
     /// <summary>
-    /// Đọc chi tiết order bằng projection SQL, chỉ select đúng cột cần cho OrderDetailDto mà không nạp cả aggregate vào memory.
+    /// Đọc order cùng collection items bằng một query không tracking, rồi map DTO trong memory theo mapping Money của hệ thống.
     /// Trả về null khi không tồn tại order với id tương ứng.
     /// </summary>
     /// <param name="id">OrderId cần tìm.</param>
@@ -66,6 +67,7 @@ public sealed class OrderRepository : IOrderRepository, IOrderReadModelRepositor
     {
         var order = await _dbContext.Orders
             .AsNoTracking()
+            .Include(currentOrder => currentOrder.Items)
             .FirstOrDefaultAsync(currentOrder => currentOrder.Id == id, cancellationToken);
 
         if (order is null)
@@ -73,11 +75,9 @@ public sealed class OrderRepository : IOrderRepository, IOrderReadModelRepositor
             return null;
         }
 
-        var items = await _dbContext.Set<OrderItem>()
-            .AsNoTracking()
-            .Where(item => EF.Property<OrderId>(item, "OrderId") == id)
+        var items = order.Items
             .OrderBy(item => item.ProductId)
-            .ToListAsync(cancellationToken);
+            .ToList();
 
         var mappedItems = items
             .Select(item => new OrderDetailItemDto(
@@ -89,7 +89,7 @@ public sealed class OrderRepository : IOrderRepository, IOrderReadModelRepositor
             .ToList();
 
         // Money được DB map thành chuỗi duy nhất `amount|currency`, `LineTotal` bị Ignore và `Status` map sang int nên không thể dịch `Total`/`LineTotal`/`ToString()` về SQL.
-        // Do đó phần map DTO còn lại phải làm ở memory sau khi query `orders` theo Id và `order_items` theo shadow key `OrderId` đã trả đủ dòng hàng.
+        // Do đó phần map DTO còn lại phải làm ở memory sau khi query `orders` theo Id đã materialize cùng với `Items` trong một câu SQL duy nhất.
         var totalAmount = items.Sum(item => item.LineTotal.Amount);
         var totalCurrency = items.Select(item => item.UnitPrice.Currency).FirstOrDefault() ?? string.Empty;
 
@@ -115,31 +115,20 @@ public sealed class OrderRepository : IOrderRepository, IOrderReadModelRepositor
     {
         var boundedPageSize = Math.Clamp(pageSize, 1, 50);
 
-        DateTime? cursorCreatedAt = null;
-        if (cursor is OrderId cursorOrderId)
-        {
-            cursorCreatedAt = await _dbContext.Orders
-                .AsNoTracking()
-                .Where(currentOrder => currentOrder.Id == cursorOrderId)
-                .Select(currentOrder => currentOrder.CreatedAt)
-                .SingleOrDefaultAsync(cancellationToken);
-
-            if (cursorCreatedAt == default && !await _dbContext.Orders.AsNoTracking().AnyAsync(currentOrder => currentOrder.Id == cursorOrderId, cancellationToken))
-            {
-                return Array.Empty<OrderSummaryDto>();
-            }
-        }
-
         var query = _dbContext.Orders
             .AsNoTracking()
             .Include(currentOrder => currentOrder.Items)
             .Where(currentOrder => currentOrder.CustomerId == customerId);
 
-        if (cursor is OrderId cursorOrderIdValue && cursorCreatedAt.HasValue)
+        if (cursor is OrderId cursorOrderId)
         {
-            // SQL chỉ có thể so sánh `CreatedAt` theo keyset được; `Id.Value` là Guid bên trong value object `HasConversion` nên EF không dịch `Id.Value < ...` xuống SQL.
-            // Để tránh bỏ sót order khi nhiều đơn cùng `CreatedAt`, SQL lấy thừa 1 row và ta lọc tie-breaker ở bộ nhớ bằng `Guid.CompareTo` sau khi materialize.
-            query = query.Where(currentOrder => currentOrder.CreatedAt <= cursorCreatedAt.Value);
+            // SQL chỉ so sánh keyset `CreatedAt` trong subquery này; tie-breaker `Guid.CompareTo` phải được lọc ở memory sau khi materialize.
+            query = query.Where(currentOrder =>
+                currentOrder.CreatedAt <= _dbContext.Orders
+                    .AsNoTracking()
+                    .Where(current => current.Id == cursorOrderId)
+                    .Select(current => current.CreatedAt)
+                    .FirstOrDefault());
         }
 
         var matchedOrders = await query
@@ -148,11 +137,17 @@ public sealed class OrderRepository : IOrderRepository, IOrderReadModelRepositor
             .Take(boundedPageSize + 1)
             .ToListAsync(cancellationToken);
 
-        if (cursor is OrderId cursorOrderIdForMemory && cursorCreatedAt.HasValue)
+        if (cursor is OrderId cursorOrderIdForMemory)
         {
+            var cursorOrder = matchedOrders.FirstOrDefault(currentOrder => currentOrder.Id == cursorOrderIdForMemory);
+            if (cursorOrder is null)
+            {
+                return Array.Empty<OrderSummaryDto>();
+            }
+
             matchedOrders = matchedOrders
-                .Where(currentOrder => currentOrder.CreatedAt < cursorCreatedAt.Value ||
-                    (currentOrder.CreatedAt == cursorCreatedAt.Value && currentOrder.Id.Value.CompareTo(cursorOrderIdForMemory.Value) < 0))
+                .Where(currentOrder => currentOrder.CreatedAt < cursorOrder.CreatedAt ||
+                    (currentOrder.CreatedAt == cursorOrder.CreatedAt && currentOrder.Id.Value.CompareTo(cursorOrderIdForMemory.Value) < 0))
                 .ToList();
         }
 

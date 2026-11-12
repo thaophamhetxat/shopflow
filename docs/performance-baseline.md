@@ -60,3 +60,30 @@ Lần chạy Day 59 được thực hiện trên repo ở trạng thái clean-tr
 - Happy path: 10/10 đơn đạt `Confirmed`; stock giảm đúng 10 đơn từ 87 xuống 77.
 - Compensation do hết hàng: 10/10 đơn đạt `Cancelled`; stock không đổi sau 10 lần reserve fail.
 - Payment fail quan sát được: 1 đơn `Cancelled`, `saga_state = FailedPayment`, stock không đổi sau khi release, xác nhận luồng compensation hoạt động như mong đợi.
+
+## Day 60 — eliminate N+1 and apply projection
+
+Benchmark sau thay đổi được đo ngày `2026-11-12 12:16 +07:00` trên `http://127.0.0.1:5181`, sau khi `/health` trả `200`. Mỗi endpoint có `100` request tuần tự; tất cả đều trả status mong đợi (`Success = 100`, `Errors = 0`). Số trước lấy nguyên từ bảng Day 59 ở trên; không chạy lại benchmark trước.
+
+| Endpoint | Requests | Avg trước (ms) | Avg sau (ms) | p50 trước (ms) | p50 sau (ms) | p99 trước (ms) | p99 sau (ms) | Max trước (ms) | Max sau (ms) | Errors sau |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `POST /api/v1/orders` | 100 | 13.72 | 15.40 | 13.14 | 14.82 | 21.33 | 20.71 | 22.82 | 51.41 | 0 |
+| `GET /api/v1/orders/{id}` | 100 | 9.75 | 4.19 | 8.52 | 4.13 | 33.43 | 5.21 | 89.21 | 5.86 | 0 |
+| `GET /api/v1/orders?customerId=...&pageSize=20` | 100 | 8.29 | 4.22 | 6.36 | 4.20 | 12.04 | 5.04 | 185.14 | 7.85 | 0 |
+| `DELETE /api/v1/orders/{id}` | 100 | 17.93 | 14.36 | 16.17 | 14.08 | 44.52 | 24.73 | 69.11 | 27.99 | 0 |
+| `GET /api/v2/orders/{id}` | 100 | 6.41 | 3.73 | 6.30 | 3.69 | 7.96 | 4.58 | 12.39 | 4.97 | 0 |
+
+### Read-endpoint SQL command counts
+
+Before-counts below describe the Day 59 implementation shape recorded during the Day 60 code audit. After-counts were captured from EF Core `Executed DbCommand` logs for one measured request per endpoint/page; an additional first-page request was used only to obtain the cursor for the cursor-page measurement. The cursor list request includes its `CreatedAt` scalar subquery in the main SQL command. The new PostgreSQL integration tests independently assert one command for both list pages and order detail.
+
+| Read endpoint | DbCommands trước | DbCommands sau | Sau sửa: SQL log evidence |
+|---|---:|---:|---|
+| `GET /api/v1/orders/{id}` | 2 | 1 | One `SELECT` from `orders` with a `LEFT JOIN order_items`, filtered by order id. |
+| `GET /api/v2/orders/{id}` | 2 | 1 | Same one-command `orders`/`order_items` query as v1. |
+| `GET /api/v1/orders?customerId=...&pageSize=20` — first page | 1 | 1 | One `SELECT` with customer filter, `ORDER BY`, `LIMIT`, and joined items. |
+| `GET /api/v1/orders?customerId=...&pageSize=20&cursor=...` — cursor page | 2–3 | 1 | One `SELECT`; cursor `CreatedAt` is a scalar subquery in the `WHERE`, followed by keyset ordering and limit. |
+| `GET /inventory/{id}` | 1 | 1 | One `SELECT` from `products` filtered by id; query now uses the read-only no-tracking method. |
+| `GET /payments/{id}` | 1 | 1 | One `SELECT` from `payments` filtered by id; the audit used a not-found id and still observed the single query. |
+
+Order detail and list continue to map `Money`, computed totals, and status values in memory after materialization; no non-translatable `LineTotal`, currency, or `Status.ToString()` expressions were added to SQL. Inventory and Payment command paths retain tracking while their GET handlers use dedicated `AsNoTracking()` reads.

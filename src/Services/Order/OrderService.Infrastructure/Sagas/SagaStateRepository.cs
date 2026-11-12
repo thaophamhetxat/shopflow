@@ -1,5 +1,6 @@
 // File này chứa implementation repository lưu `saga_state` trong PostgreSQL bằng DbContext của OrderService.
 // Layer Infrastructure này dùng EF Core để persist state machine của Saga, phục vụ recover sau restart và kiểm tra trạng thái hiện tại trong Day 52.
+// Day 60 giữ no-tracking cho truy vấn đọc và tracking cho Save/Upsert để lưu thay đổi hiện hữu.
 
 using Microsoft.EntityFrameworkCore;
 using OrderService.Application.Sagas;
@@ -51,6 +52,7 @@ public sealed class SagaStateRepository : ISagaStateRepository
     /// <param name="cancellationToken">Token hủy khi save DB.</param>
     public async Task SaveAsync(SagaState state, CancellationToken cancellationToken = default)
     {
+        // Đọc để cập nhật SagaState hiện có trong cùng DbContext, nên truy vấn ghi này cần tracking.
         var existing = await _dbContext.SagaStates
             .FirstOrDefaultAsync(entry => entry.OrderId == state.OrderId, cancellationToken);
 
@@ -77,6 +79,7 @@ public sealed class SagaStateRepository : ISagaStateRepository
     /// </summary>
     public async Task UpsertAsync(Guid orderId, SagaStateStatus status, string? errorMessage = null, CancellationToken cancellationToken = default)
     {
+        // Upsert sẽ sửa entity đang tồn tại, vì vậy truy vấn cần tracking để SaveChangesAsync phát hiện thay đổi.
         var existing = await _dbContext.SagaStates
             .FirstOrDefaultAsync(entry => entry.OrderId == orderId, cancellationToken);
 

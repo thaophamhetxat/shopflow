@@ -11,8 +11,10 @@ using Microsoft.Extensions.Logging;
 using OrderService.Application;
 using OrderService.Application.Commands;
 using OrderService.Application.Queries;
+using OrderService.Domain.Repositories;
 using OrderService.Domain.ValueObjects;
 using OrderService.Infrastructure.Persistence;
+using OrderService.Infrastructure.Repositories;
 using Xunit;
 
 namespace OrderService.Infrastructure.Tests;
@@ -46,6 +48,21 @@ public sealed class ReadModelProjectionTests
         services.AddInfrastructure(configuration);
 
         return services.BuildServiceProvider();
+    }
+
+    private static OrderDbContext CreateLoggingDbContext(Action<string> captureSqlLog)
+    {
+        var connectionString = Environment.GetEnvironmentVariable("ConnectionStrings__OrderDb")
+            ?? "Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;******;";
+        var options = new DbContextOptionsBuilder<OrderDbContext>()
+            .UseNpgsql(connectionString)
+            .LogTo(
+                captureSqlLog,
+                new[] { DbLoggerCategory.Database.Command.Name },
+                LogLevel.Information)
+            .Options;
+
+        return new OrderDbContext(options);
     }
 
     private static async Task ResetDatabaseAsync(IServiceProvider provider, params string[] idempotencyKeys)
@@ -376,6 +393,161 @@ public sealed class ReadModelProjectionTests
             finally
             {
                 await ResetDatabaseAsync(provider);
+                provider.Dispose();
+            }
+        }
+        finally
+        {
+            DatabaseLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Evidence Day 60: xác nhận trang đầu và trang cursor của list summary đều thực thi đúng một DbCommand.
+    /// </summary>
+    /// <returns>Task đại diện cho test tích hợp PostgreSQL.</returns>
+    [Fact]
+    public async Task ListOrdersByCustomer_ExecutesSingleQuery()
+    {
+        await DatabaseLock.WaitAsync();
+        try
+        {
+            var sqlLogs = new List<string>();
+            var idempotencyKeys = Enumerable.Range(0, 3).Select(_ => $"single-query-list-{Guid.NewGuid():N}").ToList();
+            var provider = BuildServiceProvider();
+
+            try
+            {
+                await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
+                var mediator = provider.GetRequiredService<IMediator>();
+                var customerId = Guid.NewGuid();
+
+                foreach (var idempotencyKey in idempotencyKeys)
+                {
+                    await mediator.Send(new PlaceOrderCommand(
+                        customerId,
+                        "60 Query Street",
+                        "Hà Nội",
+                        "Việt Nam",
+                        "100000",
+                        new List<PlaceOrderItem>
+                        {
+                            new(Guid.NewGuid(), 1, 100m, "USD"),
+                            new(Guid.NewGuid(), 2, 50m, "USD")
+                        },
+                        idempotencyKey));
+                }
+
+                await using var dbContext = CreateLoggingDbContext(message =>
+                {
+                    lock (sqlLogs)
+                    {
+                        sqlLogs.Add(message);
+                    }
+                });
+                IOrderReadModelRepository readModel = new OrderRepository(dbContext);
+
+                lock (sqlLogs)
+                {
+                    sqlLogs.Clear();
+                }
+                var firstPage = await readModel.ListOrderSummariesByCustomerAsync(CustomerId.From(customerId), null, 2);
+                int firstPageCommandCount;
+                lock (sqlLogs)
+                {
+                    firstPageCommandCount = sqlLogs.Count(message => message.Contains("Executed DbCommand", StringComparison.Ordinal));
+                    sqlLogs.Clear();
+                }
+
+                Assert.Equal(2, firstPage.Count);
+                Assert.Equal(1, firstPageCommandCount);
+
+                var secondPage = await readModel.ListOrderSummariesByCustomerAsync(
+                    CustomerId.From(customerId),
+                    OrderService.Domain.ValueObjects.OrderId.From(firstPage[^1].OrderId),
+                    2);
+
+                int secondPageCommandCount;
+                lock (sqlLogs)
+                {
+                    secondPageCommandCount = sqlLogs.Count(message => message.Contains("Executed DbCommand", StringComparison.Ordinal));
+                }
+
+                Assert.Single(secondPage);
+                Assert.Equal(1, secondPageCommandCount);
+            }
+            finally
+            {
+                await ResetDatabaseAsync(provider, idempotencyKeys.ToArray());
+                provider.Dispose();
+            }
+        }
+        finally
+        {
+            DatabaseLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Evidence Day 60: xác nhận đọc chi tiết order cùng nhiều item chỉ thực thi đúng một DbCommand.
+    /// </summary>
+    /// <returns>Task đại diện cho test tích hợp PostgreSQL.</returns>
+    [Fact]
+    public async Task GetOrderDetail_ExecutesSingleQuery()
+    {
+        await DatabaseLock.WaitAsync();
+        try
+        {
+            var sqlLogs = new List<string>();
+            var idempotencyKey = $"single-query-detail-{Guid.NewGuid():N}";
+            var provider = BuildServiceProvider();
+
+            try
+            {
+                await ResetDatabaseAsync(provider, idempotencyKey);
+                var mediator = provider.GetRequiredService<IMediator>();
+                var orderId = await mediator.Send(new PlaceOrderCommand(
+                    Guid.NewGuid(),
+                    "60 Detail Street",
+                    "Hà Nội",
+                    "Việt Nam",
+                    "100000",
+                    new List<PlaceOrderItem>
+                    {
+                        new(Guid.NewGuid(), 1, 100m, "USD"),
+                        new(Guid.NewGuid(), 2, 50m, "USD"),
+                        new(Guid.NewGuid(), 3, 25m, "USD")
+                    },
+                    idempotencyKey));
+
+                await using var dbContext = CreateLoggingDbContext(message =>
+                {
+                    lock (sqlLogs)
+                    {
+                        sqlLogs.Add(message);
+                    }
+                });
+                IOrderReadModelRepository readModel = new OrderRepository(dbContext);
+                lock (sqlLogs)
+                {
+                    sqlLogs.Clear();
+                }
+
+                var detail = await readModel.GetOrderDetailAsync(orderId);
+
+                int commandCount;
+                lock (sqlLogs)
+                {
+                    commandCount = sqlLogs.Count(message => message.Contains("Executed DbCommand", StringComparison.Ordinal));
+                }
+
+                Assert.NotNull(detail);
+                Assert.Equal(3, detail!.Items.Count);
+                Assert.Equal(1, commandCount);
+            }
+            finally
+            {
+                await ResetDatabaseAsync(provider, idempotencyKey);
                 provider.Dispose();
             }
         }

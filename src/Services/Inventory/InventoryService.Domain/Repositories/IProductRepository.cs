@@ -48,12 +48,20 @@ public interface IProductRepository
     Task<Product> ReserveAsync(ProductId id, int quantity, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Tìm Product theo ID, trả null nếu không tồn tại.
+    /// Tìm Product theo ID để thao tác ghi; cần tracking vì aggregate sẽ được sửa trong cùng DbContext.
     /// </summary>
     /// <param name="id">ProductId cần tìm.</param>
     /// <param name="cancellationToken">Token hủy thao tác bất đồng bộ.</param>
     /// <returns>Product nếu tìm thấy; ngược lại null.</returns>
     Task<Product?> GetByIdAsync(ProductId id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Tìm Product theo ID ở chế độ đọc thuần, không theo dõi entity để giảm overhead cho query endpoint.
+    /// </summary>
+    /// <param name="id">ProductId cần tìm.</param>
+    /// <param name="cancellationToken">Token hủy thao tác bất đồng bộ.</param>
+    /// <returns>Product nếu tìm thấy; ngược lại null.</returns>
+    Task<Product?> GetByIdReadOnlyAsync(ProductId id, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Ghi các thay đổi đang được repository theo dõi xuống cơ sở dữ liệu.

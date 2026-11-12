@@ -32,7 +32,7 @@ public sealed class GetPaymentQueryHandler : IRequestHandler<GetPaymentQuery, Pa
     /// <returns>DTO thanh toán nếu tìm thấy; ngược lại null.</returns>
     public async Task<PaymentDto?> Handle(GetPaymentQuery request, CancellationToken cancellationToken)
     {
-        var payment = await _repository.GetByIdAsync(PaymentId.From(request.PaymentId), cancellationToken);
+        var payment = await _repository.GetByIdReadOnlyAsync(PaymentId.From(request.PaymentId), cancellationToken);
         return payment is null
             ? null
             : new PaymentDto(
