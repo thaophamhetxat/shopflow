@@ -280,3 +280,32 @@ Verification ran on `2026-11-13` after adding structured JSON logging, Prometheu
 The Inventory and Payment smoke-test processes used temporary process-only connection-string overrides derived from the verified local Order database configuration because their checked-in local settings omit a password. No database credentials or source connection settings were changed. Those temporary API processes were stopped after verification; PostgreSQL was restarted and left healthy.
 
 The RabbitMQ health-check package is `9.0.0` (net8.0) to match RabbitMQ.Client `7.0.0`; its `8.0.2` release depends on RabbitMQ.Client `6.8.1` and failed at runtime. See [`observability.md`](./observability.md) for the package details.
+
+## Day 66 — concurrent load and p99 tuning trial
+
+The k6 workload used 50 VUs for five minutes (35 `place_order`, 10 `get_order`, 5 `list_orders`) against `http://localhost:5181`. The baseline was captured before tuning; the second run tested one configuration-only hypothesis. Both raw outputs are retained in [`tools/loadtest/results/`](../tools/loadtest/results/).
+
+### Baseline and tuning trial
+
+| Metric | Baseline | Pool-warmup trial |
+|---|---:|---:|
+| HTTP requests | 112,933 | 103,994 |
+| Throughput (req/s) | 372.488 | 342.772 |
+| HTTP failure rate | 0.00% | 0.00% |
+| Average latency | 129.22 ms | 140.24 ms |
+| p50 latency | 78.24 ms | 78.50 ms |
+| p99 latency | 466.59 ms | 809.62 ms |
+| Maximum latency | 4.48 s | 8.18 s |
+
+The baseline met the workload's throughput and HTTP-error targets. As requested, the experiment targeted the remaining p99/tail concern rather than changing business behavior. Prometheus' per-handler histogram showed the Order `POST /api/v1/orders` path as the slowest sustained user-facing path: the median of 1-minute p99 estimates was about 493 ms, versus about 190 ms for order detail and 208 ms for list. Across those 1-minute windows, the highest estimated p99 was 2.87 s for order POST. Internal reserve/payment endpoints also showed occasional multi-second p99 estimates; these are downstream saga calls and are not directly included in the k6 client request latency.
+
+One reversible configuration hypothesis raised the Order Npgsql pool minimum from its default of 0 to 10 while keeping the maximum at 100. The second k6 run did not show an improvement: aggregate p99 rose from 466.59 ms to 809.62 ms, and the maximum rose from 4.48 s to 8.18 s. This single post-change run does not establish causality, but it does not support retaining the pool change. The pool setting was reverted; no application/configuration tuning is retained. Further profiling is needed before selecting another intervention.
+
+### Verification checklist
+
+- [x] Run `ChannelFull_LogsWarning_WhenAtCapacity` alone: 1/1 passed (about 53 seconds).
+- [x] Run the full solution test suite: 139/143 passed; four timeouts and the isolated rerun results are recorded in [`tools/loadtest/README.md`](../tools/loadtest/README.md).
+- [x] Save the pre-tuning and post-trial k6 output.
+- [x] Gateway-path one-minute smoke run: 0% HTTP failures and 23,798/23,798 checks passed; raw output is in [`tools/loadtest/results/day66-gateway.txt`](../tools/loadtest/results/day66-gateway.txt).
+
+The infrastructure test `ChannelFull_LogsWarning_WhenAtCapacity` is timing-sensitive: it passed alone but timed out after its three-minute condition wait under full-suite load. Three saga transition tests also timed out in this full-suite run and passed in a subsequent isolated run; this suggests load sensitivity but is not enough to establish a cause. The suite did not fully pass (139/143). Treat a `ChannelFull` full-suite timeout as the known Day 59 flake only when the isolated test passes; an isolated failure is a regression and must stop the workflow. No test code was changed for these failures.
