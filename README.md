@@ -1,53 +1,164 @@
 # ShopFlow
 
-ShopFlow là solution .NET 8 theo mô hình Clean Architecture hướng đến 4 bounded context: Order, Inventory, Payment và Notification. Mục tiêu Day 38 là khởi tạo nền tảng đúng lịch NET_Schedule, giữ ranh giới dữ liệu riêng cho từng context và đảm bảo solution build được trước khi thêm nghiệp vụ trong các day tiếp theo.
+ShopFlow là hệ thống demo về order processing theo mô hình microservice và saga orchestration. Repo hiện đang tập trung vào 4 bounded context chính: Order, Inventory, Payment và Notification, cùng một gateway YARP để đóng vai trò route trung tâm.
 
-## Công nghệ và chuẩn kiến trúc
+## 1. Tổng quan
 
-- .NET 8 + ASP.NET Core minimal API
-- EF Core 8 và PostgreSQL cho persistence ở từng bounded context
-- Redis và RabbitMQ làm infrastructure local cho cache/message
-- MediatR và FluentValidation sẽ được thêm ở Day 41 theo lịch
-- YARP Gateway sẽ được thêm ở Day 49 theo lịch
-- Mỗi context có database riêng: shopflow_order, shopflow_inventory, shopflow_payment, shopflow_notification
+Mục tiêu của repo là mô phỏng luồng nghiệp vụ thực tế:
+- Khách hàng tạo order
+- Inventory kiểm tra tồn kho và reserve
+- Payment xử lý thanh toán
+- Order theo dõi tiến độ qua saga / outbox / event bus
+- Notification xử lý thông báo hoặc worker dựa trên message queue
 
-## Cách chạy local
+Các service hiện có trong repo được xây dựng theo hướng Clean Architecture rõ ràng: Domain → Application → Infrastructure → API.
 
-1. Chạy docker compose up -d để khởi động PostgreSQL, Redis và RabbitMQ.
-2. Chạy từng API bằng dotnet run --project src/Services/<Service>/<Project>.csproj.
-3. Kiểm tra service bằng GET /health trên port được cấu hình khi app đã start.
-4. Chạy gateway Day 49 theo command: `dotnet run --project src/Gateway/ShopFlow.Gateway --launch-profile http` sau khi 3 API đang chạy local.
+## 2. Kiến trúc hiện tại
 
-> Lưu ý: mật khẩu local ShopFlow123! chỉ dùng cho bài tập trên máy dev, không được dùng cho môi trường production.
+### Thành phần chính
+- OrderService.API: API cho order và integration với inventory/payment
+- InventoryService.API: API dùng cho stock check, reserve/release
+- PaymentService.API: API thanh toán / gốc nghiệp vụ tài chính
+- NotificationService.API + NotificationService.Worker: phục vụ notification / consumer background
+- ShopFlow.Gateway: YARP reverse proxy cho các request tới downstream services
+- ShopFlow.BuildingBlocks: shared abstractions, tracing, health checks, logging
 
-## Gateway Day 49
+### Cổng/port dùng trong local dev
 
-| Service | Port | Endpoint chính |
+| Service | Port | Ghi chú |
 | --- | --- | --- |
-| ShopFlow.Gateway (YARP) | `5000` | `/health`, `/health/live`, proxy route tới Order/Inventory/Payment |
-| Order API | `5181` | `/api/v1/orders`, `/api/v2/orders/{id}` |
-| Inventory API | `5140` | `/inventory/{id}`, `/inventory/reserve`, `/inventory/release` |
-| Payment API | `5199` | `/payments`, `/payments/{id}`, `/payments/{id}/refund` |
+| Gateway | `5000` | Route trung tâm qua YARP |
+| Order API | `5181` | Endpoint chính cho order |
+| Inventory API | `5140` | Check stock / reserve / release |
+| Payment API | `5199` | Thanh toán và refund |
+| RabbitMQ Management | `15672` | UI quản trị broker |
+| Redis | `6379` | Cache + idempotency / dependency |
+| PostgreSQL | `5432` | DB local của services |
+| Jaeger UI | `16686` | Tracing |
+| Prometheus | `9090` | Metrics |
+| Grafana | `3000` | Dashboard metrics |
 
-## Lộ trình Day 38–67
+## 3. Công nghệ và nền tảng
 
-| Day | Tên công việc |
-| --- | --- |
-| Day 38 | Solution setup + bounded context design |
-| Day 39 | Domain model cho Order |
-| Day 40 | Domain model cho Inventory/Payment/Notification |
-| Day 41 | Application layer + MediatR + FluentValidation |
-| Day 42 | EF Core + PostgreSQL integration |
-| Day 43 | Outbox pattern |
-| Day 45 | Idempotency |
-| Day 47 | API versioning |
-| Day 48 | Inventory + Payment skeleton |
-| Day 49 | Gateway YARP |
-| Day 52 | Saga coordination |
-| Day 53 | Saga compensation |
-| Day 54 | Resilience |
-| Day 55 | Event sourcing |
-| Day 64 | Jaeger + tracing |
-| Day 65 | Prometheus + Grafana + health readiness |
+- .NET 8 + ASP.NET Core
+- Minimal API và API versioning
+- EF Core + PostgreSQL
+- Redis cho cache / idempotency / infra
+- RabbitMQ dùng cho event bus / outbox / async integration
+- YARP Gateway
+- OpenTelemetry + Jaeger
+- Prometheus + Grafana
+- Docker Compose cho local infrastructure
 
-Chi tiết từng ngày xem file ShopFlow_Lich_Trinh_Day38_67.md nếu repo bổ sung tài liệu lịch trình này.
+## 4. Khởi động local
+
+### Bước 1: khởi động infra
+
+```bash
+docker compose up -d
+```
+
+Các service chạy sau khi compose lên: PostgreSQL, Redis, RabbitMQ, Jaeger, Prometheus, Grafana và gateway Docker.
+
+### Bước 2: chạy từng service .NET local
+
+```bash
+dotnet run --project src/Services/Order/OrderService.API/OrderService.API.csproj
+```
+
+```bash
+dotnet run --project src/Services/Inventory/InventoryService.API/InventoryService.API.csproj
+```
+
+```bash
+dotnet run --project src/Services/Payment/PaymentService.API/PaymentService.API.csproj
+```
+
+```bash
+dotnet run --project src/Gateway/ShopFlow.Gateway/ShopFlow.Gateway.csproj
+```
+
+> Lưu ý: nếu đã chạy gateway Docker trong `docker compose`, nên dừng hoặc tránh xung đột port `5000` trước khi chạy local gateway host.
+
+### Bước 3: health check
+
+- `http://localhost:5181/health`
+- `http://localhost:5140/health`
+- `http://localhost:5199/health`
+- `http://localhost:5000/health`
+
+Các endpoint `/health/ready` cũng được định nghĩa để kiểm tra readiness khi downstream đang sẵn sàng nhận traffic.
+
+## 5. Tài khoản và cấu hình môi trường
+
+### PostgreSQL
+Tại Docker Compose, container database được tạo với:
+- user: `shopflow`
+- password: `ShopFlow123!`
+
+Tuy nhiên, các connection string runtime app local đang dùng:
+- `Host=localhost;Port=5432;Database=shopflow_order;Username=shopflow;Password=shopflow123`
+
+Đây là hai giá trị khác nhau và cần được phân biệt rõ ràng nhằm tránh nhầm lẫn khi debug local infrastructure.
+
+### RabbitMQ
+- user: `guest`
+- password: `guest`
+- queue chính quan sát trong smoke test: `shopflow.order-events`
+
+## 6. Lộ trình Day 38–67 và trạng thái thực tế
+
+| Day | Mục tiêu | Trạng thái |
+| --- | --- | --- |
+| Day 38 | Setup solution + bounded contexts | Đã triển khai |
+| Day 39 | Domain model cho Order | Đã triển khai |
+| Day 40 | Domain model cho Inventory/Payment/Notification | Đã triển khai |
+| Day 41 | Application layer + MediatR + validation | Đã triển khai |
+| Day 42 | EF Core + PostgreSQL integration | Đã triển khai |
+| Day 43 | Outbox pattern | Đã có nền tảng |
+| Day 45 | Idempotency | Đã có cơ chế trong cấu trúc |
+| Day 47 | API versioning | Đã triển khai |
+| Day 48 | Inventory + Payment skeleton | Đã triển khai |
+| Day 49 | Gateway YARP | Đã triển khai |
+| Day 52 | Saga coordination | Có nền tảng tương ứng |
+| Day 53 | Saga compensation | Có nền tảng tương ứng |
+| Day 54 | Resilience | Có triển khai qua middleware/health |
+| Day 55 | Event sourcing / event flow | Có cấu trúc liên quan |
+| Day 64 | Jaeger + tracing | Đã triển khai |
+| Day 65 | Prometheus + Grafana + health readiness | Đã triển khai |
+| Day 66 | Repo hygiene + stale fix + validation | Đã hoàn tất ở mức local verification |
+| Day 67 | Final review + Definition of Done | Đã cập nhật docs và evidence |
+
+## 7. Verification evidence
+
+### Test suite
+```bash
+dotnet test ShopFlow.sln --logger "console;verbosity=minimal"
+```
+
+Kết quả thực tế ở trạng thái local: tests chính chạy thành công; các test performance-sensitive đã từng flaky trong full suite khi chạy đồng thời được kiểm lại riêng lẻ và pass. Đây là tình huống được chấp nhận trong quy tắc Day 67 khi không có regression mới.
+
+### Smoke validation
+- Gateway `/health` trả 200 khi downstream đang sẵn sàng
+- `OrderService` có thể xử lý order hợp lệ qua gateway
+- Order status đạt `Confirmed`
+- Message xuất hiện trong RabbitMQ queue `shopflow.order-events`
+
+## 8. Repo hygiene và ràng buộc
+
+- Các placeholder không có logic nghiệp vụ đã được dọn sạch khỏi repo.
+- Các registration in-memory trong `OrderService.Application` là stale và dễ gây hiểu nhầm, nhưng không phải runtime bug vì `OrderService.Infrastructure` override thực tế trong production composition.
+- Mục tiêu hiện tại là project state thật, không phải mô tả “future plan” không còn khớp.
+
+## 9. Cảnh báo quan trọng
+
+Repo vẫn là một hệ thống demo / local development sample, không phải sản phẩm production-ready hoàn chỉnh với auth, secrets management, hoặc CI/CD hoàn chỉnh. Các warning NuGet và advisory package hiện còn tồn tại và nên được xử lý trong giai đoạn maintenance tiếp theo.
+
+## 10. Tài liệu liên quan
+
+- [docs/definition-of-done.md](./docs/definition-of-done.md)
+- [docs/retrospective.md](./docs/retrospective.md)
+- [docs/architecture-diagram.md](./docs/architecture-diagram.md)
+- [docs/observability.md](./docs/observability.md)
+- [docs/tracing.md](./docs/tracing.md)
+- [docs/performance-baseline.md](./docs/performance-baseline.md)
